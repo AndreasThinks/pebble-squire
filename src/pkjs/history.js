@@ -37,10 +37,16 @@ function fetchAndSendHistory() {
         var cleanUsername = botUsername.replace(/^@/, '');
 
         client.getMessages(cleanUsername, { limit: 20 }).then(function(messages) {
+            console.log('[history] total messages returned: ' + (messages ? messages.length : 0));
             if (!messages || messages.length === 0) {
                 console.log('[history] No messages found');
                 sendHistoryDone();
                 return;
+            }
+
+            for (var d = 0; d < messages.length; d++) {
+                var dm = messages[d];
+                console.log('[history] msg[' + d + '] out=' + dm.out + ' id=' + dm.id + ' hasMessage=' + !!(dm && dm.message) + ' className=' + (dm.className || 'none'));
             }
 
             var historyEntries = [];

@@ -191,16 +191,20 @@ Session.prototype.pollForMessages = function(client, botUsername, startTime, tim
 
     function poll() {
         if (stopped || Date.now() - startTime > 120000) {
+            console.log('[session] poll stopping, stopped=' + stopped + ' elapsed=' + (Date.now() - startTime));
             return;
         }
 
+        console.log('[session] polling bot=' + botUsername);
         try {
             client.getMessages(botUsername, { limit: 5 }).then(function(messages) {
                 if (stopped) return;
+                console.log('[session] poll got ' + (messages ? messages.length : 0) + ' messages');
                 if (messages && messages.length > 0) {
                     for (var i = messages.length - 1; i >= 0; i--) {
                         var msg = messages[i];
                         if (!msg || !msg.message) continue;
+                        console.log('[session] poll msg out=' + msg.out + ' id=' + msg.id + ' date=' + msg.date);
                         if (msg.out === true || msg.out === 1) continue;
                         if (processedIds[msg.id]) continue;
                         if (msg.date * 1000 <= startTime) continue;
