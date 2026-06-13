@@ -124,7 +124,7 @@
                 "type": "text",
                 "id": "telegramInstructions",
                 "label": "",
-                "defaultValue": "Enter your phone number and save to send a verification code. Then enter the code and save again to sign in."
+                "defaultValue": "Enter your phone number and save to send a verification code. Then enter the code and save again to sign in. Tip: for best results, set display.platforms.telegram.tool_progress: off in your agent backend config."
             },
             {
                 "type": "input",
