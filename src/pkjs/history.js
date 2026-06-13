@@ -54,7 +54,12 @@ function fetchAndSendHistory() {
             var historyEntries = [];
             for (var i = 0; i < messages.length && historyEntries.length < HISTORY_LIMIT; i++) {
                 var msg = messages[i];
-                if (!msg || !msg.message) continue;
+                if (!msg || !(msg.message && msg.message.length > 0)) {
+                    if (msg && msg.out !== true && msg.out !== 1) {
+                        console.log('[history] bot empty msg _text=' + JSON.stringify(msg._text) + ' media=' + (msg.media ? msg.media.className : 'none') + ' action=' + (msg.action ? msg.action.className : 'none'));
+                    }
+                    continue;
+                }
 
                 var text = msg.message;
                 var isOwn = msg.out === true || msg.out === 1;
