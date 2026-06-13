@@ -46,9 +46,9 @@ function fetchAndSendHistory() {
 
             for (var d = 0; d < Math.min(messages.length, 3); d++) {
                 var dm = messages[d];
-                var keys = [];
-                for (var k in dm) { if (dm.hasOwnProperty(k)) keys.push(k); }
-                console.log('[history] msg[' + d + '] out=' + dm.out + ' id=' + dm.id + ' message=' + JSON.stringify(dm.message) + ' text=' + JSON.stringify(dm.text) + ' rawText=' + JSON.stringify(dm.rawText) + ' keys=' + keys.join(','));
+                if (dm.out === false || dm.out === 0) {
+                    console.log('[history] bot msg _text=' + JSON.stringify(dm._text) + ' originalArgs=' + JSON.stringify(dm.originalArgs));
+                }
             }
 
             var historyEntries = [];

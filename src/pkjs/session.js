@@ -206,9 +206,7 @@ Session.prototype.pollForMessages = function(client, botUsername, startTime, tim
                         if (!msg) continue;
                         if (!msg.message) {
                             if (msg.out !== true && msg.out !== 1) {
-                                var keys = [];
-                                for (var k in msg) { if (msg.hasOwnProperty(k)) keys.push(k); }
-                                console.log('[session] poll bot msg no .message keys=' + keys.join(',') + ' text=' + JSON.stringify(msg.text) + ' rawText=' + JSON.stringify(msg.rawText));
+                                console.log('[session] poll bot msg _text=' + JSON.stringify(msg._text) + ' originalArgs=' + JSON.stringify(msg.originalArgs));
                             }
                             continue;
                         }
