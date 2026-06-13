@@ -36,10 +36,7 @@ function fetchAndSendHistory() {
         }
         var cleanUsername = botUsername.replace(/^@/, '');
 
-        client.getEntity(cleanUsername).then(function(peer) {
-            console.log('[history] resolved peer for', cleanUsername, ':', peer ? peer.className : 'null', 'id=', peer && peer.id ? peer.id.toString() : 'none');
-            return client.getMessages(peer, { limit: 20 });
-        }).then(function(messages) {
+        client.getMessages(cleanUsername, { limit: 20 }).then(function(messages) {
             if (!messages || messages.length === 0) {
                 console.log('[history] No messages found');
                 sendHistoryDone();
