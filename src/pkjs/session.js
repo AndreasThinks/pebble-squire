@@ -143,8 +143,10 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
                 if (resolved) return;
                 var msg = event.message;
                 if (!msg || !msg.message) return;
-                // Ignore the user's own outgoing messages (Telegram echoes them back)
-                if (msg.out === true) return;
+                // Ignore the user's own outgoing messages (Telegram echoes them back).
+                // msg.out may be boolean true or the number 1 depending on GramJS version/platform.
+                console.log('[session] raw message out=', msg.out, 'id=', msg.id, 'text=', msg.message.substring(0, 50));
+                if (msg.out === true || msg.out === 1) return;
                 if (processedIds[msg.id]) return;
                 processedIds[msg.id] = true;
                 self.handleIncomingMessage(msg.message, done);

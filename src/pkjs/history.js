@@ -42,7 +42,8 @@ function fetchAndSendHistory() {
                 if (!msg || !msg.message) continue;
 
                 var text = msg.message;
-                var isOwn = msg.out === true;
+                var isOwn = msg.out === true || msg.out === 1;
+                console.log('[history] raw message out=', msg.out, 'text=', text.substring(0, 50));
 
                 if (isOwn) {
                     var promptText = text;
