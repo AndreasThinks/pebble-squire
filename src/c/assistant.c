@@ -20,7 +20,6 @@
 #include "converse/session_window.h"
 #include "converse/conversation_manager.h"
 #include "converse/history.h"
-#include "image_manager/image_manager.h"
 #include "version/version.h"
 #include "settings/settings.h"
 
@@ -65,9 +64,6 @@ static void prv_init(void) {
   settings_init();
   history_init();
   conversation_manager_init();
-#if ENABLE_FEATURE_IMAGE_MANAGER
-  image_manager_init();
-#endif
   s_history_handle = events_app_message_register_inbox_received(prv_history_message_handler, NULL);
   events_app_message_open();
 }
@@ -77,9 +73,6 @@ static void prv_deinit(void) {
     root_window_destroy(s_root_window);
   }
   events_app_message_unsubscribe(s_history_handle);
-#ifdef ENABLE_FEATURE_IMAGE_MANAGER
-  image_manager_deinit();
-#endif
 }
 
 int main(void) {

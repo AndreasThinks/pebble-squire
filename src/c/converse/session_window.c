@@ -325,15 +325,12 @@ static void prv_set_scroll_height(SessionWindow* sw) {
 static void prv_update_thinking_layer(SessionWindow* sw) {
   ConversationEntry* entry = conversation_peek(conversation_manager_get_conversation(sw->manager));
   bool visible = false;
-  if (entry != NULL) {
+    if (entry != NULL) {
     EntryType entry_type = conversation_entry_get_type(entry);
     if (entry_type == EntryTypePrompt || entry_type == EntryTypeAction || entry_type == EntryTypeThought) {
       visible = true;
     } else if (entry_type == EntryTypeResponse) {
       visible = !conversation_entry_get_response(entry)->complete;
-    } else if (entry_type == EntryTypeWidget) {
-      // Locally created widgets should still have a response coming after.
-      visible = conversation_entry_get_widget(entry)->locally_created;
     }
   }
 
@@ -444,7 +441,6 @@ static void prv_conversation_manager_handler(bool entry_added, void* context) {
   // For responses that took longer than five seconds, pulse the vibe when we get useful data.
   switch (entry_type) {
     case EntryTypeResponse:
-    case EntryTypeWidget:
     case EntryTypeAction:
     case EntryTypeError:
       if (sw->query_time > 0) {
@@ -460,7 +456,7 @@ static void prv_conversation_manager_handler(bool entry_added, void* context) {
       // nothing to do here.
       break;
   }
-  if (entry_type == EntryTypeResponse || entry_type == EntryTypeWidget || entry_type == EntryTypeAction) {
+  if (entry_type == EntryTypeResponse || entry_type == EntryTypeAction) {
 
   }
   // For now, whenever we add a new entry, we want to scroll to the top of it.

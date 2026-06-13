@@ -15,7 +15,6 @@
  */
 
 #include "conversation.h"
-#include "../image_manager/image_manager.h"
 #include "../util/memory/malloc.h"
 #include "../util/logging.h"
 #include "../features.h"
@@ -27,7 +26,6 @@ struct ConversationEntry {
     ConversationPrompt *prompt;
     ConversationResponse *response;
     ConversationThought *thought;
-    ConversationWidget *widget;
     ConversationError *error;
   } content;
 };
@@ -94,36 +92,6 @@ void prv_destroy_entry(ConversationEntry *entry) {
           break;
       }
       free(entry->content.action);
-      break;
-    case EntryTypeWidget:
-      switch (entry->content.widget->type) {
-        case ConversationWidgetTypeWeatherSingleDay:
-          free(entry->content.widget->widget.weather_single_day.location);
-          free(entry->content.widget->widget.weather_single_day.summary);
-          free(entry->content.widget->widget.weather_single_day.temp_unit);
-          free(entry->content.widget->widget.weather_single_day.day);
-          break;
-        case ConversationWidgetTypeWeatherCurrent:
-          free(entry->content.widget->widget.weather_current.location);
-          free(entry->content.widget->widget.weather_current.summary);
-          free(entry->content.widget->widget.weather_current.wind_speed_unit);
-          break;
-        case ConversationWidgetTypeWeatherMultiDay:
-          free(entry->content.widget->widget.weather_multi_day.location);
-          break;
-        case ConversationWidgetTypeNumber:
-          free(entry->content.widget->widget.number.number);
-          if (entry->content.widget->widget.number.unit) {
-            free(entry->content.widget->widget.number.unit);
-          }
-          break;
-#if ENABLE_FEATURE_MAPS
-        case ConversationWidgetTypeMap:
-          image_manager_destroy_image(entry->content.widget->widget.map.image_id);
-          break;
-#endif
-      }
-      free(entry->content.widget);
       break;
   }
   entry->type = EntryTypeDeleted;
@@ -248,14 +216,6 @@ void conversation_add_error(Conversation* conversation, const char* error_text) 
   entry->content.error = error;
 }
 
-void conversation_add_widget(Conversation* conversation, ConversationWidget* widget) {
-  ConversationWidget* new_widget = bmalloc(sizeof(ConversationWidget));
-  memcpy(new_widget, widget, sizeof(ConversationWidget));
-  ConversationEntry* entry = prv_create_entry(conversation);
-  entry->type = EntryTypeWidget;
-  entry->content.widget = new_widget;
-}
-
 void conversation_delete_first_entry(Conversation* conversation) {
   ConversationEntry* entry = &conversation->entries[conversation->deleted_entries];
   while (entry->type == EntryTypeDeleted && conversation->deleted_entries < conversation->entry_count) {
@@ -320,8 +280,6 @@ const char* prv_type_to_string(EntryType type) {
       return "EntryTypeAction";
     case EntryTypeError:
       return "EntryTypeError";
-    case EntryTypeWidget:
-      return "EntryTypeWidget";
   }
   return "Unknown";
 }
@@ -366,14 +324,6 @@ ConversationAction* conversation_entry_get_action(ConversationEntry* action) {
   return action->content.action;
 }
 
-ConversationWidget* conversation_entry_get_widget(ConversationEntry* widget) {
-  if (widget->type != EntryTypeWidget) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Asked for widget %p, but it's actually a %s.", widget, prv_type_to_string(widget->type));
-    return NULL;
-  }
-  return widget->content.widget;
-}
-
 EntryType conversation_entry_get_type(ConversationEntry* entry) {
   return entry->type;
 }
@@ -403,9 +353,6 @@ bool conversation_is_idle(Conversation* conversation) {
   if (entry->type == EntryTypeResponse) {
     return entry->content.response->complete;
   }
-  if (entry->type == EntryTypeWidget) {
-    return true;
-  }
   return false;
 }
 
@@ -419,8 +366,6 @@ static bool prv_entry_type_is_assistant(ConversationEntry* entry) {
       return false;
     case EntryTypeResponse:
       return true;
-    case EntryTypeWidget:
-      return !entry->content.widget->locally_created;
   }
   return false;
 }

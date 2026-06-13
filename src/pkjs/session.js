@@ -20,9 +20,7 @@ var bundleLoader = require('./lib/bundle_loader');
 var location = require('./location');
 var config = require('./config');
 var actions = require('./actions');
-var widgets = require('./widgets');
 var messageQueue = require('./lib/message_queue').Queue;
-var features = require('./features');
 var telegram = require('./telegram');
 
 var package_json = require('package.json');
@@ -176,10 +174,6 @@ Session.prototype.handleIncomingMessage = function(message, resolve) {
     resolve({ complete: true });
 };
 
-Session.prototype.processWidget = function(widgetData) {
-    widgets.handleWidget(this, widgetData);
-};
-
 Session.prototype.enqueue = function(message) {
     messageQueue.enqueue(message);
 };
@@ -209,10 +203,6 @@ Session.prototype.runLegacy = function() {
     }
     url += '&tzOffset=' + (-(new Date()).getTimezoneOffset());
     url += '&actions=' + actions.getSupportedActions().join(',');
-    url += '&widgets=weather,number';
-    if (features.FEATURE_MAP_WIDGET) {
-        url += ',map';
-    }
     var settings = getSettings();
     url += '&units=' + settings['UNIT_PREFERENCE'] || '';
     url += '&lang=' + settings['LANGUAGE_CODE'] || '';
@@ -229,33 +219,10 @@ Session.prototype.handleLegacyMessage = function(event) {
     console.log(message);
 
     if (message[0] == 'c') {
-        var widgetRegex = /<<!!WIDGET:(.+?)!!>>/;
-        var content = message.substring(1);
-        var match;
-
-        while (content.length > 0) {
-            match = widgetRegex.exec(content);
-            if (!match) {
-                break;
-            }
-            var widget = match[1];
-            console.log("Widget found: " + widget);
-            var start = match.index;
-            if (start != 0) {
-                this.enqueue({
-                    CHAT: content.substring(0, start)
-                });
-            }
-            this.processWidget(widget);
-            this.hasOpenDialog = false;
-            content = content.substring(match.index + match[0].length);
-        }
-        if (content.length > 0) {
-            this.hasOpenDialog = true;
-            this.enqueue({
-                CHAT: content
-            });
-        }
+        this.hasOpenDialog = true;
+        this.enqueue({
+            CHAT: message.substring(1)
+        });
     } else if (message[0] == 'd') {
         this.hasOpenDialog = false;
         this.enqueue({

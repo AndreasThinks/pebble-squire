@@ -59,25 +59,16 @@ add_executable(tiny_assistant_app
         src/c/util/style.c
         src/c/util/vector_sequence_layer.c
         src/c/util/result_window.c
-        src/c/converse/segments/widgets/weather_single_day.c
-        src/c/converse/segments/widgets/weather_current.c
-        src/c/converse/segments/widgets/weather_util.c
-        src/c/converse/segments/widgets/weather_multi_day.c
         src/c/talking_squire_layer.c
         src/c/version/version.c
         src/c/util/time.c
-        src/c/converse/segments/widgets/timer.c
-        src/c/converse/segments/widgets/number.c
         src/c/settings/settings.c
-        src/c/vibes/sad_vibe_score.c
         src/c/util/formatted_text_layer.c
         src/c/menus/about_window.c
         src/c/vibes/haptic_feedback.c
-        src/c/util/action_menu_crimes.c
-        src/c/image_manager/image_manager.c
-        src/c/converse/segments/widgets/map.c
         src/c/util/memory/malloc.c
         src/c/util/memory/pressure.c
         src/c/util/memory/sdk.c
         src/c/release_notes.c
+
 )

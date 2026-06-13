@@ -4,6 +4,13 @@ var telegram = require('./telegram');
 
 var HISTORY_LIMIT = 4;
 
+function formatLoggedMessage(message) {
+    if (!message) return '';
+    var withoutSystem = message.replace(/<system>[\s\S]*?<\/system>/g, '').trim();
+    if (withoutSystem.length <= 100) return withoutSystem;
+    return withoutSystem.substring(0, 50) + '...' + withoutSystem.substring(withoutSystem.length - 50);
+}
+
 function fetchAndSendHistory() {
     if (!telegram.hasSession()) {
         console.log('[history] No Telegram session, skipping history fetch');
@@ -46,7 +53,7 @@ function fetchAndSendHistory() {
 
                 var text = msg.message;
                 var isOwn = msg.out === true || msg.out === 1;
-                console.log('[history] raw message out=', msg.out, 'text=', text.substring(0, 50));
+                console.log('[history] raw message out=', msg.out, 'text=', formatLoggedMessage(text));
 
                 if (isOwn) {
                     var promptText = text;

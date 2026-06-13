@@ -18,14 +18,3 @@
 
 // If true, instead of using dictation input, the app will just use a fixed prompt.
 #define ENABLE_FEATURE_FIXED_PROMPT 0
-
-// IFTTT: if you change this, you need to update the corresponding feature in src/pkjs/features.js.
-// If true, maps will be available.
-#define ENABLE_FEATURE_MAPS 1
-
-// If true, the image manager will be available (required for maps to function)
-#define ENABLE_FEATURE_IMAGE_MANAGER 1
-
-#if ENABLE_FEATURE_MAPS && !ENABLE_FEATURE_IMAGE_MANAGER
-#error "ENABLE_FEATURE_MAPS requires ENABLE_FEATURE_IMAGE_MANAGER to be enabled."
-#endif

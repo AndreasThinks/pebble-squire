@@ -40,11 +40,6 @@ static void prv_handle_app_message_outbox_sent(DictionaryIterator *iterator, voi
 static void prv_handle_app_message_outbox_failed(DictionaryIterator *iterator, AppMessageResult reason, void *context);
 static void prv_handle_app_message_inbox_received(DictionaryIterator *iterator, void *context);
 static void prv_handle_app_message_inbox_dropped(AppMessageResult result, void *context);
-static void prv_process_weather_widget(int widget_type, DictionaryIterator *iter, ConversationManager *manager);
-static void prv_process_highlight_widget(int widget_type, DictionaryIterator *iter, ConversationManager *manager);
-#if ENABLE_FEATURE_MAPS
-static void prv_process_map_widget(int widget_type, DictionaryIterator *iter, ConversationManager *manager);
-#endif
 static bool prv_handle_memory_pressure(void *context);
 
 static ConversationManager* s_conversation_manager;
@@ -136,12 +131,6 @@ void conversation_manager_add_action(ConversationManager* manager, ConversationA
   prv_conversation_updated(manager, true);
 }
 
-void conversation_manager_add_widget(ConversationManager* manager, ConversationWidget* widget) {
-  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Adding widget to conversation.");
-  conversation_add_widget(manager->conversation, widget);
-  prv_conversation_updated(manager, true);
-}
-
 static void prv_handle_app_message_outbox_sent(DictionaryIterator *iterator, void *context) {
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Sent message successfully.");
 }
@@ -200,205 +189,9 @@ static void prv_handle_app_message_inbox_received(DictionaryIterator *iter, void
       prv_conversation_updated(manager, false);
       conversation_add_error(manager->conversation, tuple->value->cstring);
       prv_conversation_updated(manager, true);
-    } else if (tuple->key == MESSAGE_KEY_WEATHER_WIDGET) {
-      conversation_complete_response(manager->conversation);
-      prv_conversation_updated(manager, false);
-      prv_process_weather_widget(tuple->value->int32, iter, manager);
-    } else if (tuple->key == MESSAGE_KEY_HIGHLIGHT_WIDGET) {
-      conversation_complete_response(manager->conversation);
-      prv_conversation_updated(manager, false);
-      prv_process_highlight_widget(tuple->value->int32, iter, manager);
-#if ENABLE_FEATURE_MAPS
-    } else if (tuple->key == MESSAGE_KEY_MAP_WIDGET) {
-      conversation_complete_response(manager->conversation);
-      prv_conversation_updated(manager, false);
-      prv_process_map_widget(tuple->value->int32, iter, manager);
-#endif
     }
   }
 }
-
-// Helper macro to safely get dict value or return early (for void functions)
-#define DICT_GET_INT32(iter, key, var) do { \
-  Tuple *t = dict_find((iter), (key)); \
-  if (!t) { SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Missing key %d", (key)); return; } \
-  (var) = t->value->int32; \
-} while(0)
-
-#define DICT_GET_CSTRING(iter, key, var) do { \
-  Tuple *t = dict_find((iter), (key)); \
-  if (!t) { SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Missing key %d", (key)); return; } \
-  (var) = t->value->cstring; \
-} while(0)
-
-static void prv_process_weather_widget(int widget_type, DictionaryIterator *iter, ConversationManager *manager) {
-  switch (widget_type) {
-    case 1: {
-      int high, low, icon;
-      const char *summary, *location, *temp_unit, *day;
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_HIGH, high);
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_LOW, low);
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_ICON, icon);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_SUMMARY, summary);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_LOCATION, location);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_TEMP_UNIT, temp_unit);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_OF_WEEK, day);
-      char* summary_stored = bmalloc(strlen(summary) + 1);
-      strcpy(summary_stored, summary);
-      char* location_stored = bmalloc(strlen(location) + 1);
-      strcpy(location_stored, location);
-      char* temp_unit_stored = bmalloc(strlen(temp_unit) + 1);
-      strcpy(temp_unit_stored, temp_unit);
-      char* day_stored = bmalloc(strlen(day) + 1);
-      strcpy(day_stored, day);
-      ConversationWidget widget = {
-        .type = ConversationWidgetTypeWeatherSingleDay,
-        .widget = {
-          .weather_single_day = {
-            .high = high,
-            .low = low,
-            .condition = icon,
-            .location = location_stored,
-            .summary = summary_stored,
-            .temp_unit = temp_unit_stored,
-            .day = day_stored,
-          }
-        }
-      };
-      conversation_add_widget(manager->conversation, &widget);
-      prv_conversation_updated(manager, true);
-      break;
-    }
-    case 2: {
-      int temp, feels_like, icon, wind_speed;
-      const char *location, *summary, *wind_speed_unit;
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_CURRENT_TEMP, temp);
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_FEELS_LIKE, feels_like);
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_ICON, icon);
-      DICT_GET_INT32(iter, MESSAGE_KEY_WEATHER_WIDGET_WIND_SPEED, wind_speed);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_LOCATION, location);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_DAY_SUMMARY, summary);
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_WIND_SPEED_UNIT, wind_speed_unit);
-      char* location_stored = bmalloc(strlen(location) + 1);
-      strcpy(location_stored, location);
-      char* summary_stored = bmalloc(strlen(summary) + 1);
-      strcpy(summary_stored, summary);
-      char* wind_speed_unit_stored = bmalloc(strlen(wind_speed_unit) + 1);
-      strcpy(wind_speed_unit_stored, wind_speed_unit);
-      ConversationWidget widget = {
-        .type = ConversationWidgetTypeWeatherCurrent,
-        .widget = {
-          .weather_current = {
-            .temperature = temp,
-            .feels_like = feels_like,
-            .condition = icon,
-            .wind_speed = wind_speed,
-            .location = location_stored,
-            .summary = summary_stored,
-            .wind_speed_unit = wind_speed_unit_stored,
-          }
-        }
-      };
-      conversation_add_widget(manager->conversation, &widget);
-      prv_conversation_updated(manager, true);
-      break;
-    }
-    case 3: {
-      const char *location;
-      DICT_GET_CSTRING(iter, MESSAGE_KEY_WEATHER_WIDGET_LOCATION, location);
-      char *location_stored = bmalloc(strlen(location) + 1);
-      strcpy(location_stored, location);
-      ConversationWidget widget = {
-        .type = ConversationWidgetTypeWeatherMultiDay,
-        .widget = {
-          .weather_multi_day = {
-            .location = location_stored,
-          }
-        }
-      };
-      for (int i = 0; i < 3; ++i) {
-        ConversationWidgetWeatherMultiDaySegment *s = &widget.widget.weather_multi_day.days[i];
-        Tuple *high_tuple = dict_find(iter, MESSAGE_KEY_WEATHER_WIDGET_MULTI_HIGH + i);
-        Tuple *low_tuple = dict_find(iter, MESSAGE_KEY_WEATHER_WIDGET_MULTI_LOW + i);
-        Tuple *icon_tuple = dict_find(iter, MESSAGE_KEY_WEATHER_WIDGET_MULTI_ICON + i);
-        Tuple *day_tuple = dict_find(iter, MESSAGE_KEY_WEATHER_WIDGET_MULTI_DAY + i);
-        if (!high_tuple || !low_tuple || !icon_tuple || !day_tuple) {
-          SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Missing multi-day weather data for day %d", i);
-          free(location_stored);
-          return;
-        }
-        s->high = high_tuple->value->int32;
-        s->low = low_tuple->value->int32;
-        s->condition = icon_tuple->value->int32;
-        const char* day = day_tuple->value->cstring;
-        strncpy(s->day, day, sizeof(s->day));
-        s->day[sizeof(s->day) - 1] = '\0';
-      }
-      conversation_add_widget(manager->conversation, &widget);
-      prv_conversation_updated(manager, true);
-      break;
-    }
-  }
-}
-
-static void prv_process_highlight_widget(int widget_type, DictionaryIterator *iter, ConversationManager *manager) {
-  if (widget_type != 1) {
-    return;
-  }
-  Tuple *number_tuple = dict_find(iter, MESSAGE_KEY_HIGHLIGHT_WIDGET_PRIMARY);
-  if (!number_tuple) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Missing HIGHLIGHT_WIDGET_PRIMARY");
-    return;
-  }
-  char *number = number_tuple->value->cstring;
-  char *number_stored = bmalloc(strlen(number) + 1);
-  strcpy(number_stored, number);
-  char *units_stored = NULL;
-  Tuple *tuple = dict_find(iter, MESSAGE_KEY_HIGHLIGHT_WIDGET_SECONDARY);
-  if (tuple) {
-    const char *units = tuple->value->cstring;
-    units_stored = bmalloc(strlen(units) + 1);
-    strcpy(units_stored, units);
-  }
-  ConversationWidget widget = {
-    .type = ConversationWidgetTypeNumber,
-    .widget = {
-      .number = {
-        .number = number_stored,
-        .unit = units_stored,
-      }
-    }
-  };
-  conversation_add_widget(manager->conversation, &widget);
-  prv_conversation_updated(manager, true);
-}
-
-#if ENABLE_FEATURE_MAPS
-static void prv_process_map_widget(int widget_type, DictionaryIterator *iter, ConversationManager *manager) {
-  if (widget_type != 1) {
-    return;
-  }
-  Tuple *image_id_tuple = dict_find(iter, MESSAGE_KEY_MAP_WIDGET_IMAGE_ID);
-  Tuple *user_loc_tuple = dict_find(iter, MESSAGE_KEY_MAP_WIDGET_USER_LOCATION);
-  if (!image_id_tuple || !user_loc_tuple) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Missing MAP_WIDGET keys");
-    return;
-  }
-  int image_id = image_id_tuple->value->int32;
-  int user_location = user_loc_tuple->value->int32;
-  ConversationWidget widget = {
-    .type = ConversationWidgetTypeMap,
-    .widget = {
-      .map = {
-        .image_id = image_id,
-        .user_location = GPoint(user_location >> 16, user_location & 0xFFFF),
-      }
-    }
-  };
-  conversation_add_widget(manager->conversation, &widget);
-  prv_conversation_updated(manager, true);
-}
-#endif
 
 static void prv_handle_app_message_inbox_dropped(AppMessageResult reason, void *context) {
   SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Received message dropped: %d", reason);

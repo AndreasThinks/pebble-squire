@@ -28,16 +28,6 @@ typedef enum {
   ConversationActionTypeGenericSentence,
 } ConversationActionType;
 
-typedef enum {
-  ConversationWidgetTypeWeatherSingleDay,
-  ConversationWidgetTypeWeatherCurrent,
-  ConversationWidgetTypeWeatherMultiDay,
-  ConversationWidgetTypeNumber,
-#if ENABLE_FEATURE_MAPS
-  ConversationWidgetTypeMap,
-#endif
-} ConversationWidgetType;
-
 typedef struct {
 } ConversationActionPokeHomeAssistant;
 
@@ -72,67 +62,12 @@ typedef struct {
   char *message;
 } ConversationError;
 
-typedef struct {
-  int high;
-  int low;
-  int condition;
-  char *location;
-  char *summary;
-  char *temp_unit;
-  char *day;
-} ConversationWidgetWeatherSingleDay;
-
-typedef struct {
-  int temperature;
-  int feels_like;
-  int condition;
-  int wind_speed;
-  char *location;
-  char *summary;
-  char *wind_speed_unit;
-} ConversationWidgetWeatherCurrent;
-
-typedef struct {
-  char day[4];
-  int high;
-  int low;
-  int condition;
-} ConversationWidgetWeatherMultiDaySegment;
-
-typedef struct {
-  char *location;
-  ConversationWidgetWeatherMultiDaySegment days[3];
-} ConversationWidgetWeatherMultiDay;
-
-typedef struct {
-  char *number;
-  char *unit;
-} ConversationWidgetNumber;
-
-typedef struct {
-  int image_id;
-  GPoint user_location;
-} ConversationWidgetMap;
-
-typedef struct {
-  ConversationWidgetType type;
-  bool locally_created;
-  union {
-    ConversationWidgetWeatherSingleDay weather_single_day;
-    ConversationWidgetWeatherCurrent weather_current;
-    ConversationWidgetWeatherMultiDay weather_multi_day;
-    ConversationWidgetNumber number;
-    ConversationWidgetMap map;
-  } widget;
-} ConversationWidget;
-
 typedef enum {
   EntryTypeDeleted,
   EntryTypePrompt,
   EntryTypeResponse,
   EntryTypeThought,
   EntryTypeAction,
-  EntryTypeWidget,
   EntryTypeError,
 } EntryType;
 
@@ -145,7 +80,6 @@ bool conversation_add_response_fragment(Conversation *conversation, const char* 
 void conversation_complete_response(Conversation *conversation);
 void conversation_add_thought(Conversation* conversation, char* thought);
 void conversation_add_action(Conversation* conversation, ConversationAction* action);
-void conversation_add_widget(Conversation* conversation, ConversationWidget* widget);
 void conversation_add_error(Conversation* conversation, const char* error_text);
 void conversation_set_thread_id(Conversation* conversation, const char* thread_id);
 const char* conversation_get_thread_id(Conversation* conversation);
@@ -164,6 +98,5 @@ ConversationResponse* conversation_entry_get_response(ConversationEntry* respons
 ConversationThought* conversation_entry_get_thought(ConversationEntry* thought);
 ConversationError* conversation_entry_get_error(ConversationEntry* response);
 ConversationAction* conversation_entry_get_action(ConversationEntry* action);
-ConversationWidget* conversation_entry_get_widget(ConversationEntry* widget);
 
 #endif

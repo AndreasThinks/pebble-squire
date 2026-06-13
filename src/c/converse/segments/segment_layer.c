@@ -18,11 +18,6 @@
 #include "../conversation.h"
 #include "info_layer.h"
 #include "message_layer.h"
-#include "widgets/weather_single_day.h"
-#include "widgets/weather_current.h"
-#include "widgets/weather_multi_day.h"
-#include "widgets/number.h"
-#include "widgets/map.h"
 #include "../../util/memory/sdk.h"
 #include "../../util/logging.h"
 #include "../../features.h"
@@ -38,13 +33,6 @@ typedef enum {
   SegmentTypeNone,
   SegmentTypeMessage,
   SegmentTypeInfo,
-  SegmentTypeWeatherSingleDayWidget,
-  SegmentTypeWeatherCurrentWidget,
-  SegmentTypeWeatherMultiDayWidget,
-  SegmentTypeNumberWidget,
-#if ENABLE_FEATURE_MAPS
-  SegmentTypeMapWidget,
-#endif
 } SegmentType;
 
 typedef struct {
@@ -58,13 +46,6 @@ typedef struct {
     Layer* layer;
     InfoLayer* info_layer;
     MessageLayer* message_layer;
-    WeatherSingleDayWidget* weather_single_day_widget;
-    WeatherCurrentWidget* weather_current_widget;
-    WeatherMultiDayWidget* weather_multi_day_widget;
-    NumberWidget* number_widget;
-#if ENABLE_FEATURE_MAPS
-    MapWidget* map_widget;
-#endif
   };
 } SegmentLayerData;
 
@@ -96,23 +77,6 @@ SegmentLayer* segment_layer_create(GRect rect, ConversationEntry* entry, bool as
     case SegmentTypeInfo:
       data->info_layer = info_layer_create(child_frame, entry);
       break;
-    case SegmentTypeWeatherSingleDayWidget:
-      data->weather_single_day_widget = weather_single_day_widget_create(child_frame, entry);
-      break;
-    case SegmentTypeWeatherCurrentWidget:
-      data->weather_current_widget = weather_current_widget_create(child_frame, entry);
-      break;
-    case SegmentTypeWeatherMultiDayWidget:
-      data->weather_multi_day_widget = weather_multi_day_widget_create(child_frame, entry);
-      break;
-    case SegmentTypeNumberWidget:
-      data->number_widget = number_widget_create(child_frame, entry);
-      break;
-#if ENABLE_FEATURE_MAPS
-    case SegmentTypeMapWidget:
-      data->map_widget = map_widget_create(child_frame, entry);
-      break;
-#endif
   }
   layer_add_child(layer, data->layer);
   GSize child_size = layer_get_frame(data->layer).size;
@@ -136,23 +100,6 @@ void segment_layer_destroy(SegmentLayer* layer) {
     case SegmentTypeInfo:
       info_layer_destroy(data->info_layer);
       break;
-    case SegmentTypeWeatherSingleDayWidget:
-      weather_single_day_widget_destroy(data->weather_single_day_widget);
-      break;
-    case SegmentTypeWeatherCurrentWidget:
-      weather_current_widget_destroy(data->weather_current_widget);
-      break;
-    case SegmentTypeWeatherMultiDayWidget:
-      weather_multi_day_widget_destroy(data->weather_multi_day_widget);
-      break;
-    case SegmentTypeNumberWidget:
-      number_widget_destroy(data->number_widget);
-      break;
-#if ENABLE_FEATURE_MAPS
-    case SegmentTypeMapWidget:
-      map_widget_destroy(data->map_widget);
-      break;
-#endif
   }
   if (data->assistant_label_layer) {
     text_layer_destroy(data->assistant_label_layer);
@@ -176,23 +123,6 @@ void segment_layer_update(SegmentLayer* layer) {
     case SegmentTypeInfo:
       info_layer_update(data->info_layer);
       break;
-    case SegmentTypeWeatherSingleDayWidget:
-      weather_single_day_widget_update(data->weather_single_day_widget);
-      break;
-    case SegmentTypeWeatherCurrentWidget:
-      weather_current_widget_update(data->weather_current_widget);
-      break;
-    case SegmentTypeWeatherMultiDayWidget:
-      weather_multi_day_widget_update(data->weather_multi_day_widget);
-      break;
-    case SegmentTypeNumberWidget:
-      number_widget_update(data->number_widget);
-      break;
-#if ENABLE_FEATURE_MAPS
-    case SegmentTypeMapWidget:
-      map_widget_update(data->map_widget);
-      break;
-#endif
   }
   GSize child_size = layer_get_frame(data->layer).size;
   GPoint origin = layer_get_frame(layer).origin;
@@ -214,22 +144,6 @@ static SegmentType prv_get_segment_type(ConversationEntry* entry) {
     case EntryTypeError:
     case EntryTypeAction:
       return SegmentTypeInfo;
-    case EntryTypeWidget:
-      switch (conversation_entry_get_widget(entry)->type) {
-        case ConversationWidgetTypeWeatherSingleDay:
-          return SegmentTypeWeatherSingleDayWidget;
-        case ConversationWidgetTypeWeatherCurrent:
-          return SegmentTypeWeatherCurrentWidget;
-        case ConversationWidgetTypeWeatherMultiDay:
-          return SegmentTypeWeatherMultiDayWidget;
-        case ConversationWidgetTypeNumber:
-          return SegmentTypeNumberWidget;
-#if ENABLE_FEATURE_MAPS
-        case ConversationWidgetTypeMap:
-          return SegmentTypeMapWidget;
-#endif
-      }
-      break;
   }
   SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Unknown entry type %d.", conversation_entry_get_type(entry));
   return SegmentTypeNone;
