@@ -32,7 +32,7 @@
 #define STAGE_LOCATION_CONSENT 2
 
 #ifdef PBL_PLATFORM_GABBRO
-#define TEXT_PADDING 20
+#define TEXT_PADDING 30
 #define TEXT_ALIGNMENT GTextAlignmentCenter
 #define SCROLL_BOTTOM_PADDING 60
 #else
