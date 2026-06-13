@@ -44,9 +44,11 @@ function fetchAndSendHistory() {
                 return;
             }
 
-            for (var d = 0; d < messages.length; d++) {
+            for (var d = 0; d < Math.min(messages.length, 3); d++) {
                 var dm = messages[d];
-                console.log('[history] msg[' + d + '] out=' + dm.out + ' id=' + dm.id + ' hasMessage=' + !!(dm && dm.message) + ' className=' + (dm.className || 'none'));
+                var keys = [];
+                for (var k in dm) { if (dm.hasOwnProperty(k)) keys.push(k); }
+                console.log('[history] msg[' + d + '] out=' + dm.out + ' id=' + dm.id + ' message=' + JSON.stringify(dm.message) + ' text=' + JSON.stringify(dm.text) + ' rawText=' + JSON.stringify(dm.rawText) + ' keys=' + keys.join(','));
             }
 
             var historyEntries = [];
