@@ -107,20 +107,27 @@ Session.prototype.sendToAgent = function(message) {
 Session.prototype.sendViaGramJS = function(message, botUsername, resolve, reject) {
     var self = this;
     var cleanUsername = botUsername.replace(/^@/, '');
+    var botPeer = null;
 
     telegram.initClient().then(function() {
         var tgClient = telegram.getClient();
-        return tgClient.sendMessage(cleanUsername, { message: message });
+        return tgClient.getEntity(cleanUsername);
+    }).then(function(peer) {
+        botPeer = peer;
+        console.log('[session] resolved bot peer:', botUsername, peer ? peer.className : 'null');
+        // Start listening before sending to avoid missing a fast response
+        self.listenForResponse(telegram.getClient(), botPeer, resolve, reject);
+        var tgClient = telegram.getClient();
+        return tgClient.sendMessage(botPeer, { message: message });
     }).then(function(result) {
         console.log('[session] Message sent to', botUsername, 'id:', result ? result.id : 'unknown');
-        self.listenForResponse(telegram.getClient(), botUsername, resolve, reject);
     }).catch(function(error) {
         console.error('[session] GramJS error:', error);
         reject(error);
     });
 };
 
-Session.prototype.listenForResponse = function(client, botUsername, resolve, reject) {
+Session.prototype.listenForResponse = function(client, botPeer, resolve, reject) {
     var self = this;
     var timeout = 120000;
     var resolved = false;
@@ -138,6 +145,7 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
     }, timeout);
 
     if (typeof NewMessage !== 'undefined') {
+        var newMessageFilter = botPeer ? new NewMessage({ chats: [botPeer] }) : new NewMessage({});
         client.addEventHandler(function(event) {
             try {
                 if (resolved) return;
@@ -153,11 +161,14 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
             } catch (err) {
                 console.error('[session] Error handling message:', err);
             }
-        }, new NewMessage({}));
+        }, newMessageFilter);
+    } else {
+        // Fallback: poll the chat if event handlers aren't available
+        self.pollForMessages(client, botPeer, Date.now(), timeoutId, resolve, reject);
     }
 };
 
-Session.prototype.pollForMessages = function(client, botUsername, startTime, timeoutId, resolve, reject) {
+Session.prototype.pollForMessages = function(client, botPeer, startTime, timeoutId, resolve, reject) {
     var self = this;
     var pollInterval = 2000; // Poll every 2 seconds
 
@@ -167,25 +178,30 @@ Session.prototype.pollForMessages = function(client, botUsername, startTime, tim
             return;
         }
 
-        // Use getMessages to fetch new messages
-        // This is a simplified approach
+        if (!botPeer) {
+            setTimeout(poll, pollInterval);
+            return;
+        }
+
         try {
-            client.getMessages(botUsername.replace(/^@/, ''), { limit: 1 }).then(function(messages) {
+            client.getMessages(botPeer, { limit: 1 }).then(function(messages) {
                 if (messages && messages.length > 0) {
                     var latestMsg = messages[0];
-                    // Check if this is a new message (after our sent message)
-                    if (latestMsg && latestMsg.date * 1000 > startTime) {
+                    // Check if this is a new message (after our sent message) and not our own
+                    if (latestMsg && latestMsg.message && !latestMsg.out && latestMsg.date * 1000 > startTime / 1000) {
                         self.handleIncomingMessage(latestMsg.message, resolve);
+                        return;
                     }
                 }
+                setTimeout(poll, pollInterval);
             }).catch(function(err) {
                 console.log('Poll error (non-fatal):', err);
+                setTimeout(poll, pollInterval);
             });
         } catch (e) {
             console.log('Poll error:', e);
+            setTimeout(poll, pollInterval);
         }
-
-        setTimeout(poll, pollInterval);
     }
 
     poll();
