@@ -50,6 +50,7 @@ function fetchAndSendHistory() {
                     if (metaIdx !== -1) {
                         promptText = promptText.substring(0, metaIdx);
                     }
+                    promptText = promptText.replace(/\n*<system>[\s\S]*?<\/system>\n*/, '');
                     if (promptText.indexOf('[thread:') === 0) {
                         promptText = promptText.substring(promptText.indexOf('] ') + 2);
                     }
