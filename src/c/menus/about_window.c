@@ -73,7 +73,7 @@ static void prv_window_load(Window* window) {
   layer_add_child(root_layer, scroll_layer_get_layer(data->scroll_layer));
 
 #ifdef PBL_PLATFORM_GABBRO
-  const int16_t text_margin = 20;
+  const int16_t text_margin = 40;
 #else
   const int16_t text_margin = 5;
 #endif
