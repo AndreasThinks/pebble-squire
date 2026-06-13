@@ -124,7 +124,7 @@
                 "type": "text",
                 "id": "telegramInstructions",
                 "label": "",
-                "defaultValue": "Enter your phone number and save to send a verification code. Then enter the code and save again to sign in. Tip for Hermes users: set display.platforms.telegram.tool_progress: off for best results."
+                "defaultValue": "Enter your phone number and save to send a verification code. Then enter the code and save again to sign in. Tip for Hermes users: set display.platforms.telegram.tool_progress: off and display.platforms.telegram.streaming: false for best results."
             },
             {
                 "type": "input",
