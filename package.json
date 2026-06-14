@@ -64,7 +64,7 @@
     "resources": {
       "media": [
         {
-          "file": "images_icons_menu_icon_default.png",
+          "file": "images_icons_app_icon.png",
           "menuIcon": true,
           "name": "IMAGE_MENU_ICON",
           "type": "bitmap"
@@ -160,7 +160,7 @@
           "type": "raw"
         },
         {
-          "file": "images_icons_menu_about.png",
+          "file": "images_icons_app_icon.png",
           "name": "MENU_ICON_ABOUT",
           "type": "bitmap",
           "memoryFormat": "SmallestPalette"
