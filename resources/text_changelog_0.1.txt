@@ -1,0 +1,11 @@
+# Squire v0.1
+
+Squire is a fork of Bobby v1.4.
+
+## What's new
+
+This is the first release of Squire! Squire connects you to AI assistants via Telegram, giving your Pebble agentic superpowers.
+
+## Telegram Integration
+
+Squire works by connecting to a Telegram bot connected to either Hermes or OpenClaw. Once connected, you can chat with your AI assistant right from your wrist.

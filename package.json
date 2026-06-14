@@ -171,8 +171,8 @@
           "type": "raw"
         },
         {
-          "file": "text_changelog_1.4.txt",
-          "name": "CHANGELOG_1_4",
+          "file": "text_changelog_0.1.txt",
+          "name": "CHANGELOG_0_1",
           "type": "raw"
         }
       ]
