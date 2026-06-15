@@ -108,9 +108,18 @@ function handleTelegramDisconnect() {
 var authInProgress = false;
 
 function handleTelegramAction(action) {
+    var authState = telegram.getAuthState ? telegram.getAuthState() : {};
     if (action.action === 'start_auth' && action.phoneNumber) {
+        if (telegram.hasSession()) {
+            console.log('[index] Already have a stored session, skipping start_auth');
+            return;
+        }
+        if (authState.isWaitingForCode) {
+            console.log('[index] Already waiting for verification code, skipping duplicate start_auth');
+            return;
+        }
         if (authInProgress) {
-            console.log('[index] Auth already in progress, skipping start_auth');
+            console.log('[index] Auth request already in progress, skipping start_auth');
             return;
         }
         authInProgress = true;
