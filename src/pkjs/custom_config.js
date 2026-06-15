@@ -84,6 +84,7 @@ module.exports = function(minified) {
         } else {
             setStatus('Not connected');
             if (disconnectBtn) disconnectBtn.hide();
+            updatePendingAction();
         }
     }
 
