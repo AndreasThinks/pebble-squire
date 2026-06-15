@@ -109,17 +109,10 @@ function startListening(botUsername) {
             }
         }, new NewMessage({}));
     } else {
-        console.log('GramJS NewMessage not available - using polling fallback');
-        startPolling(botUsername);
+        console.log('GramJS NewMessage not available - cannot listen for messages');
     }
 }
 
-/**
- * Check if message is from the specified bot.
- * @param {object} senderId - Sender ID from message
- * @param {string} botUsername - Bot username to check
- * @returns {boolean}
- */
 function checkIfFromBot(senderId, botUsername) {
     // This would need to resolve the sender ID to a username
     // For now, we'll track the bot by ID after first contact
@@ -131,20 +124,6 @@ function checkIfFromBot(senderId, botUsername) {
     return true;
 }
 
-/**
- * Start polling for messages (fallback when event handlers aren't available).
- * @param {string} botUsername - Bot username to poll
- */
-function startPolling(botUsername) {
-    console.log('Starting message polling for', botUsername);
-    // In a full implementation, this would periodically check for new messages
-    // For now, we'll rely on the main session loop to handle responses
-}
-
-/**
- * Handle an incoming message from the bot.
- * @param {string} message - The message content
- */
 function handleIncomingMessage(message) {
     console.log('Processing incoming message:', message.substring(0, 100));
 
