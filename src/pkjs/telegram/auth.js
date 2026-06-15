@@ -27,6 +27,8 @@ var phoneCodeHash = null;
 var pendingPhone = null;
 var authSession = null;
 
+var AUTH_STATE_KEY = 'telegram_auth_waiting_for_code';
+
 var AUTH_DC = {
     id: 1,
     host: 'pluto.web.telegram.org'
@@ -77,12 +79,14 @@ function startAuth(phoneNumber) {
             }
             phoneCodeHash = result.phoneCodeHash;
             authSession = authClient.session.save();
+            try { localStorage.setItem(AUTH_STATE_KEY, 'true'); } catch(e) {}
             resolve({
                 success: true,
                 status: 'code_sent'
             });
         }).catch(function(err) {
             console.error('[auth] startAuth failed: ' + (err.message || err));
+            try { localStorage.removeItem(AUTH_STATE_KEY); } catch(e) {}
             reject(new Error('Auth failed: ' + (err.errorMessage || err.message)));
         });
     });
@@ -90,6 +94,7 @@ function startAuth(phoneNumber) {
 
 function provideCode(code) {
     console.log('[auth] provideCode called');
+    try { localStorage.removeItem(AUTH_STATE_KEY); } catch(e) {}
     return new Promise(function(resolve, reject) {
         if (!phoneCodeHash) {
             reject(new Error('No pending code request — call startAuth first'));

@@ -22,6 +22,7 @@ module.exports = function(minified) {
 
     var SESSION_KEY = 'telegram_session';
     var BOT_USERNAME_KEY = 'agent_telegram_username';
+    var AUTH_STATE_KEY = 'telegram_auth_waiting_for_code';
 
     function setStatus(text, isError) {
         if (telegramStatusText) {
@@ -90,6 +91,11 @@ module.exports = function(minified) {
 
     function updatePendingAction() {
         if (loadSession()) return;
+        var isWaitingForCode = false;
+        try { isWaitingForCode = localStorage.getItem(AUTH_STATE_KEY) === 'true'; } catch(e) {}
+        if (isWaitingForCode) {
+            return;
+        }
         var code = codeInput ? codeInput.get() : '';
         var phone = phoneInput ? phoneInput.get() : '';
         if (code && !phone) {
