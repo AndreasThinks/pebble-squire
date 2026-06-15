@@ -61,10 +61,12 @@ function handleTelegramStartAuth(action) {
     telegram.startAuth(action.phoneNumber).then(function(result) {
         console.log('[index] Auth result: ' + JSON.stringify(result));
         if (result.success) clearTelegramCodeField();
+        authInProgress = false;
         sendTelegramStatus();
     }).catch(function(err) {
         console.error('[index] Auth failed: ' + err.message);
         console.error('[index] Auth error stack: ' + (err.stack || 'no stack'));
+        authInProgress = false;
         sendTelegramStatus();
     });
 }
@@ -103,8 +105,15 @@ function handleTelegramDisconnect() {
     });
 }
 
+var authInProgress = false;
+
 function handleTelegramAction(action) {
     if (action.action === 'start_auth' && action.phoneNumber) {
+        if (authInProgress) {
+            console.log('[index] Auth already in progress, skipping start_auth');
+            return;
+        }
+        authInProgress = true;
         handleTelegramStartAuth(action);
     } else if (action.action === 'provide_code' && action.code) {
         handleTelegramProvideCode(action);
