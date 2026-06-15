@@ -108,6 +108,11 @@ function initClient() {
                         isConnected = false;
                         client = null;
                         session.clearSession();
+                        try {
+                            var settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
+                            delete settings.TELEGRAM_CODE;
+                            localStorage.setItem('clay-settings', JSON.stringify(settings));
+                        } catch(e) {}
                         try { Pebble.sendAppMessage({TELEGRAM_CONNECTED: 0}); } catch(e) {}
                         reject(new Error('Telegram session expired. Please re-authenticate.'));
                         return;
@@ -122,6 +127,11 @@ function initClient() {
                     if (errorMsg.indexOf('AUTH_KEY_DUPLICATED') !== -1 || errorMsg.indexOf('AUTH_KEY_UNREGISTERED') !== -1) {
                         console.log('[client] Session key invalid, clearing session for re-auth');
                         session.clearSession();
+                        try {
+                            var settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
+                            delete settings.TELEGRAM_CODE;
+                            localStorage.setItem('clay-settings', JSON.stringify(settings));
+                        } catch(e) {}
                         isConnected = false;
                         client = null;
                         try { Pebble.sendAppMessage({TELEGRAM_CONNECTED: 0}); } catch(e) {}
@@ -131,6 +141,11 @@ function initClient() {
                     if (errorMsg.indexOf('re-authenticate') !== -1 || errorMsg.indexOf('session expired') !== -1) {
                         console.log('[client] Clearing invalid session');
                         session.clearSession();
+                        try {
+                            var settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
+                            delete settings.TELEGRAM_CODE;
+                            localStorage.setItem('clay-settings', JSON.stringify(settings));
+                        } catch(e) {}
                         isConnected = false;
                         client = null;
                         try { Pebble.sendAppMessage({TELEGRAM_CONNECTED: 0}); } catch(e) {}
