@@ -123,24 +123,44 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
     var timeout = 120000;
     var resolved = false;
     var processedIds = {};
+    var botUserId = null;
 
     function done(result) {
         if (resolved) return;
         resolved = true;
         clearTimeout(timeoutId);
+        clearTimeout(idleTimeoutId);
         resolve(result);
     }
 
-    function fail(error) {
+    var timeoutId = setTimeout(function() {
         if (resolved) return;
         resolved = true;
-        clearTimeout(timeoutId);
-        reject(error);
-    }
-
-    var timeoutId = setTimeout(function() {
-        fail(new Error('Timeout waiting for response from agent'));
+        reject(new Error('Timeout waiting for response from agent'));
     }, timeout);
+
+    // Idle timeout: 60 seconds after the last activity (message or typing)
+    var IDLE_TIMEOUT = 60000;
+    var idleTimeoutId = setTimeout(function() {
+        if (resolved) return;
+        console.log('[session] Idle timeout (60s since last activity)');
+        resolved = true;
+        self.hasOpenDialog = false;
+        self.enqueue({ CHAT_DONE: true });
+        resolve({ complete: true });
+    }, IDLE_TIMEOUT);
+
+    function resetIdleTimeout() {
+        clearTimeout(idleTimeoutId);
+        idleTimeoutId = setTimeout(function() {
+            if (resolved) return;
+            console.log('[session] Idle timeout (60s since last activity)');
+            resolved = true;
+            self.hasOpenDialog = false;
+            self.enqueue({ CHAT_DONE: true });
+            resolve({ complete: true });
+        }, IDLE_TIMEOUT);
+    }
 
     console.log('[session] listenForResponse registering handler, NewMessage available: ' + (typeof NewMessage !== 'undefined'));
 
@@ -154,6 +174,7 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
                     if (processedIds[msg.id]) return;
                     processedIds[msg.id] = true;
                     console.log('[session] raw message out=', msg.out, 'id=', msg.id, 'text=', formatLoggedMessage(msg.message));
+                    resetIdleTimeout();
                     self.handleIncomingMessage(msg.message, done);
                 } catch (err) {
                     console.error('[session] Error handling message:', err);
@@ -162,79 +183,51 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
             console.log('[session] Event handler registered successfully (incoming only)');
         } catch (err) {
             console.error('[session] Failed to register event handler:', err);
-            fail(new Error('Failed to register Telegram event handler'));
+            reject(new Error('Failed to register Telegram event handler'));
         }
     } else {
         console.error('[session] NewMessage is undefined, cannot register event handler');
-        fail(new Error('Telegram event support not available'));
+        reject(new Error('Telegram event support not available'));
     }
 
-    // Fallback: poll the chat since NewMessage events are unreliable on Pebble.
-    self.pollForMessages(client, botUsername, Date.now(), timeoutId, done, processedIds);
-};
-
-Session.prototype.pollForMessages = function(client, botUsername, startTime, timeoutId, done, processedIds) {
-    var self = this;
-    var pollInterval = 2000;
-    var stopped = false;
-
-    function stop() {
-        stopped = true;
-        clearTimeout(timeoutId);
-    }
-
-    var originalDone = done;
-    done = function(result) {
-        stop();
-        originalDone(result);
-    };
-
-    function poll() {
-        if (stopped || Date.now() - startTime > 120000) {
-            console.log('[session] poll stopping, stopped=' + stopped + ' elapsed=' + (Date.now() - startTime));
-            return;
-        }
-
-        console.log('[session] polling bot=' + botUsername);
+    // Listen for typing indicators from the bot
+    if (typeof Raw !== 'undefined') {
         try {
-            client.getMessages(botUsername, { limit: 5 }).then(function(messages) {
-                if (stopped) return;
-                console.log('[session] poll got ' + (messages ? messages.length : 0) + ' messages');
-                if (messages && messages.length > 0) {
-                    for (var i = messages.length - 1; i >= 0; i--) {
-                        var msg = messages[i];
-                        if (!msg) continue;
-                        var hasText = !!(msg.message && msg.message.length > 0);
-                        if (!hasText) {
-                            if (msg.out !== true && msg.out !== 1) {
-                                console.log('[session] poll bot empty msg _text=' + JSON.stringify(msg._text) + ' media=' + (msg.media ? msg.media.className : 'none') + ' action=' + (msg.action ? msg.action.className : 'none') + ' origArgs=' + (msg.originalArgs ? JSON.stringify(msg.originalArgs).substring(0, 200) : 'none'));
-                            }
-                            continue;
-                        }
-                        console.log('[session] poll msg out=' + msg.out + ' id=' + msg.id + ' date=' + msg.date);
-                        if (msg.out === true || msg.out === 1) continue;
-                        if (processedIds[msg.id]) continue;
-                        if (msg.date * 1000 <= startTime) continue;
-                        processedIds[msg.id] = true;
-                        console.log('[session] polled agent message id=', msg.id, 'text=', formatLoggedMessage(msg.message));
-                        self.handleIncomingMessage(msg.message, done);
-                        return;
+            client.addEventHandler(function(update) {
+                try {
+                    if (resolved) return;
+                    if (!update || !update.userId) return;
+                    // Only process typing from the bot
+                    if (botUserId && update.userId.equals(botUserId)) {
+                        console.log('[session] Bot is typing');
+                        resetIdleTimeout();
+                        self.enqueue({ TYPING: 1 });
                     }
+                } catch (err) {
+                    // Ignore errors from unrelated updates
                 }
-                setTimeout(poll, pollInterval);
-            }).catch(function(err) {
-                if (stopped) return;
-                console.log('[session] Poll error (non-fatal):', err.message || err);
-                setTimeout(poll, pollInterval);
-            });
-        } catch (e) {
-            if (stopped) return;
-            console.log('[session] Poll error:', e);
-            setTimeout(poll, pollInterval);
+            }, new Raw({}));
+            console.log('[session] Typing indicator handler registered');
+        } catch (err) {
+            console.log('[session] Could not register typing handler:', err.message || err);
         }
     }
 
-    poll();
+    // Resolve the bot's user ID so we can match typing events
+    if (typeof Api !== 'undefined') {
+        try {
+            client.getEntity(botUsername).then(function(entity) {
+                if (entity && entity.id) {
+                    botUserId = entity.id;
+                    console.log('[session] Bot user ID resolved:', botUserId.toString());
+                }
+            }).catch(function(err) {
+                console.log('[session] Could not resolve bot user ID for typing detection:', err.message || err);
+            });
+        } catch (err) {
+            console.log('[session] Could not resolve bot entity:', err.message || err);
+        }
+    }
 };
 
 function formatLoggedMessage(message) {
@@ -247,16 +240,23 @@ function formatLoggedMessage(message) {
 Session.prototype.handleIncomingMessage = function(message, resolve) {
     console.log('Received message:', formatLoggedMessage(message));
 
-    // Non-streaming mode: a single plain-text message is the complete response.
     this.hasOpenDialog = true;
     this.enqueue({
         CHAT: message
     });
-    this.hasOpenDialog = false;
-    this.enqueue({
-        CHAT_DONE: true
-    });
-    resolve({ complete: true });
+
+    var self = this;
+    if (this._doneTimer) {
+        clearTimeout(this._doneTimer);
+    }
+    this._doneTimer = setTimeout(function() {
+        self.hasOpenDialog = false;
+        self.enqueue({
+            CHAT_DONE: true
+        });
+        self._doneTimer = null;
+        resolve({ complete: true });
+    }, 2000);
 };
 
 Session.prototype.enqueue = function(message) {

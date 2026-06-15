@@ -59,7 +59,8 @@
       "HISTORY_PROMPT",
       "HISTORY_RESPONSE",
       "HISTORY_THREAD_ID",
-      "HISTORY_DONE"
+      "HISTORY_DONE",
+      "TYPING"
     ],
     "resources": {
       "media": [

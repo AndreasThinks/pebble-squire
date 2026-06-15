@@ -184,6 +184,9 @@ static void prv_handle_app_message_inbox_received(DictionaryIterator *iter, void
         },
       };
       conversation_manager_add_action(manager, &action);
+    } else if (tuple->key == MESSAGE_KEY_TYPING) {
+      bool added_entry = conversation_add_response_fragment(manager->conversation, "");
+      prv_conversation_updated(manager, added_entry);
     } else if (tuple->key == MESSAGE_KEY_WARNING) {
       conversation_complete_response(manager->conversation);
       prv_conversation_updated(manager, false);
