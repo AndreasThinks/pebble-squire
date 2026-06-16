@@ -146,10 +146,17 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
         reject(new Error('Timeout waiting for response from agent'));
     }, timeout);
 
-    // Idle timeout: 60 seconds after the last activity (message or typing)
+    // Idle timeout: 60 seconds after the last activity (message or typing),
+    // but only after we've received at least one response. Before the first
+    // response we keep waiting so slow agents don't get cut off.
     var IDLE_TIMEOUT = 60000;
     var idleTimeoutId = setTimeout(function() {
         if (resolved) return;
+        if (!self.hasOpenDialog) {
+            console.log('[session] Idle timeout fired before first response, still waiting');
+            resetIdleTimeout();
+            return;
+        }
         console.log('[session] Idle timeout (60s since last activity)');
         resolved = true;
         self.hasOpenDialog = false;
@@ -161,6 +168,11 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
         clearTimeout(idleTimeoutId);
         idleTimeoutId = setTimeout(function() {
             if (resolved) return;
+            if (!self.hasOpenDialog) {
+                console.log('[session] Idle timeout fired before first response, still waiting');
+                resetIdleTimeout();
+                return;
+            }
             console.log('[session] Idle timeout (60s since last activity)');
             resolved = true;
             self.hasOpenDialog = false;

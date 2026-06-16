@@ -68,7 +68,7 @@ static void prv_code_entered(const char* value) {
     return;
   }
 
-  result_window_push_persistent("Verifying...", "Checking your code with Telegram.", NULL, GColorWhite);
+  result_window_push("Verifying...", "Checking your code with Telegram.", NULL, GColorWhite);
 }
 
 void auth_flow_start(AuthFlowCompleteCallback callback) {
@@ -80,7 +80,7 @@ void auth_flow_start(AuthFlowCompleteCallback callback) {
 void auth_flow_handle_message(uint32_t key) {
   if (key == MESSAGE_KEY_TELEGRAM_CODE_SENT) {
     if (s_waiting_for_code) {
-      auth_entry_window_push("Enter Code", 5, prv_code_entered);
+      auth_entry_window_push_with_prefix("Enter Code", 5, false, prv_code_entered);
     }
   } else if (key == MESSAGE_KEY_TELEGRAM_CONNECTED) {
     if (s_complete_callback) s_complete_callback(true);

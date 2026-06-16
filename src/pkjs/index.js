@@ -45,95 +45,7 @@ function sendTelegramStatus() {
     });
 }
 
-function clearTelegramCodeField() {
-    try {
-        var settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
-        if (settings.TELEGRAM_CODE) {
-            delete settings.TELEGRAM_CODE;
-            localStorage.setItem('clay-settings', JSON.stringify(settings));
-            console.log('[index] Cleared TELEGRAM_CODE from clay settings');
-        }
-    } catch (e) {}
-}
-
-function handleTelegramStartAuth(action) {
-    console.log('[index] Starting Telegram auth for: ' + action.phoneNumber);
-    telegram.startAuth(action.phoneNumber).then(function(result) {
-        console.log('[index] Auth result: ' + JSON.stringify(result));
-        if (result.success) clearTelegramCodeField();
-        authInProgress = false;
-        sendTelegramStatus();
-    }).catch(function(err) {
-        console.error('[index] Auth failed: ' + err.message);
-        console.error('[index] Auth error stack: ' + (err.stack || 'no stack'));
-        authInProgress = false;
-        sendTelegramStatus();
-    });
-}
-
-function handleTelegramProvideCode(action) {
-    console.log('[index] Providing verification code');
-    telegram.provideCode(action.code).then(function(result) {
-        console.log('[index] ProvideCode result: ' + JSON.stringify(result));
-        if (result.success) {
-            telegram.resetClient();
-            clearTelegramCodeField();
-            history.fetchAndSendHistory();
-        }
-        sendTelegramStatus();
-    }).catch(function(err) {
-        console.error('[index] ProvideCode failed: ' + err.message);
-        sendTelegramStatus();
-    });
-}
-
-function handleTelegramProvidePassword(action) {
-    console.log('[index] Providing 2FA password');
-    var accepted = telegram.providePassword(action.password);
-    if (!accepted) {
-        console.error('[index] No pending password request');
-    }
-}
-
-function handleTelegramDisconnect() {
-    console.log('[index] Disconnecting from Telegram');
-    telegram.logout().then(function() {
-        console.log('[index] Disconnected successfully');
-        sendTelegramStatus();
-    }).catch(function(err) {
-        console.error('[index] Failed to disconnect: ' + err.message);
-    });
-}
-
 var authInProgress = false;
-
-function handleTelegramAction(action) {
-    var authState = telegram.getAuthState ? telegram.getAuthState() : {};
-    if (action.action === 'start_auth' && action.phoneNumber) {
-        if (telegram.hasSession()) {
-            console.log('[index] Already have a stored session, skipping start_auth');
-            return;
-        }
-        if (authState.isWaitingForCode) {
-            console.log('[index] Already waiting for verification code, skipping duplicate start_auth');
-            return;
-        }
-        if (authInProgress) {
-            console.log('[index] Auth request already in progress, skipping start_auth');
-            return;
-        }
-        authInProgress = true;
-        handleTelegramStartAuth(action);
-    } else if (action.action === 'provide_code' && action.code) {
-        handleTelegramProvideCode(action);
-    } else if (action.action === 'provide_password' && action.password) {
-        handleTelegramProvidePassword(action);
-    } else if (action.action === 'disconnect') {
-        handleTelegramDisconnect();
-    } else {
-        console.log('[index] Unknown or incomplete telegram action: ' + JSON.stringify(action));
-    }
-}
 
 function handleAppMessage(e) {
     console.log("Inbound app message!");
@@ -190,13 +102,12 @@ function handleAppMessage(e) {
         var action = {};
         try { action = JSON.parse(data.TELEGRAM_PENDING_ACTION); } catch (e) { console.error('[index] Failed to parse TELEGRAM_PENDING_ACTION: ' + data.TELEGRAM_PENDING_ACTION); }
         console.log('[index] Telegram pending action: ' + JSON.stringify(action));
-        telegram.initClient().then(function() {
-            console.log('[index] Telegram client initialized, connected: ' + telegram.isClientConnected());
-            handleTelegramAction(action);
-        }).catch(function(err) {
-            console.error('[index] Failed to initialize Telegram client: ' + err.message);
-            console.error('[index] Error stack: ' + (err.stack || 'no stack'));
-        });
+        if (action.action === 'disconnect') {
+            handleTelegramDisconnect();
+            return;
+        }
+        // Auth via config page is no longer supported; sign in from the watch instead.
+        console.log('[index] Ignoring non-disconnect pending action from config page');
         return;
     }
 
@@ -247,8 +158,4 @@ exports.updateTelegramStatus = function() {
 
 // Export message handler for testing
 exports.handleAppMessage = handleAppMessage;
-exports.handleTelegramAction = handleTelegramAction;
-exports.handleTelegramStartAuth = handleTelegramStartAuth;
-exports.handleTelegramProvideCode = handleTelegramProvideCode;
-exports.handleTelegramProvidePassword = handleTelegramProvidePassword;
 exports.handleTelegramDisconnect = handleTelegramDisconnect;

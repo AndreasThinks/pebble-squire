@@ -22,5 +22,6 @@
 typedef void (*AuthEntryCallback)(const char* value);
 
 void auth_entry_window_push(const char* title, int max_length, AuthEntryCallback callback);
+void auth_entry_window_push_with_prefix(const char* title, int max_length, bool show_plus_prefix, AuthEntryCallback callback);
 
 #endif // AUTH_ENTRY_WINDOW_H
