@@ -146,6 +146,45 @@ function handleAppMessage(e) {
         return;
     }
 
+    if ('TELEGRAM_START_AUTH' in data) {
+        ensureTelegramBundle();
+        var phone = data.TELEGRAM_START_AUTH;
+        console.log('[index] Watch requested start_auth for: ' + phone);
+        telegram.startAuth(phone).then(function(result) {
+            console.log('[index] startAuth result: ' + JSON.stringify(result));
+            if (result.success) {
+                Pebble.sendAppMessage({ TELEGRAM_CODE_SENT: 1 });
+            } else {
+                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            }
+        }).catch(function(err) {
+            console.error('[index] startAuth failed: ' + err.message);
+            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+        });
+        return;
+    }
+
+    if ('TELEGRAM_PROVIDE_CODE' in data) {
+        ensureTelegramBundle();
+        var code = data.TELEGRAM_PROVIDE_CODE;
+        console.log('[index] Watch provided code');
+        telegram.provideCode(code).then(function(result) {
+            console.log('[index] provideCode result: ' + JSON.stringify(result));
+            if (result.success) {
+                Pebble.sendAppMessage({ TELEGRAM_CONNECTED: 1 });
+                history.fetchAndSendHistory();
+            } else if (result.status === 'password_needed') {
+                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            } else {
+                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            }
+        }).catch(function(err) {
+            console.error('[index] provideCode failed: ' + err.message);
+            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+        });
+        return;
+    }
+
     if ('TELEGRAM_PENDING_ACTION' in data) {
         ensureTelegramBundle();
         var action = {};
