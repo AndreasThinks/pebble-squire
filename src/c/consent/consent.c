@@ -156,6 +156,10 @@ static void prv_window_appear(Window *window) {
 
 static void prv_window_unload(Window *window) {
   ConsentWindowData* data = window_get_user_data(window);
+  if (data->app_message_handle) {
+    events_app_message_unsubscribe(data->app_message_handle);
+    data->app_message_handle = NULL;
+  }
   scroll_layer_destroy(data->scroll_layer);
   text_layer_destroy(data->title_layer);
   text_layer_destroy(data->text_layer);
@@ -283,6 +287,7 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
   data->expected_app_response = 0;
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Got location enabled reply, dismissing dialog.");
   events_app_message_unsubscribe(data->app_message_handle);
+  data->app_message_handle = NULL;
   bool location_enabled = tuple->value->int16;
   persist_write_bool(PERSIST_KEY_LOCATION_ENABLED, location_enabled);
   prv_mark_consents_complete();
