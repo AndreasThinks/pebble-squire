@@ -47,6 +47,16 @@ function sendTelegramStatus() {
 
 var authInProgress = false;
 
+function handleTelegramDisconnect() {
+    console.log('[index] Disconnecting from Telegram');
+    telegram.logout().then(function() {
+        console.log('[index] Disconnected successfully');
+        sendTelegramStatus();
+    }).catch(function(err) {
+        console.error('[index] Failed to disconnect: ' + err.message);
+    });
+}
+
 function handleAppMessage(e) {
     console.log("Inbound app message!");
     console.log(JSON.stringify(e));
