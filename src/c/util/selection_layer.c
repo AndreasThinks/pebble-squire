@@ -502,8 +502,9 @@ static void selection_layer_deinit(Layer* layer) {
 void selection_layer_destroy(Layer *layer) {
   SelectionLayerData *data = layer_get_data(layer);
 
-  animation_unschedule_all();
   if (data) {
+    animation_unschedule(data->value_change_animation);
+    animation_unschedule(data->next_cell_animation);
     selection_layer_deinit(layer);
   }
 }
