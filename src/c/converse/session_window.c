@@ -263,14 +263,14 @@ static void prv_window_appear(Window *window) {
       ConversationEntry* conv_entry = conversation_entry_at_index(conv, i);
       bool is_last = (i == count - 1);
       bool assistant_label = (conversation_entry_get_type(conv_entry) == EntryTypeResponse) && is_last;
-      SegmentLayer* layer = segment_layer_create(GRect(SEGMENT_X, prv_content_height(sw), holder_size.w - SEGMENT_W_PADDING, 10), conv_entry, assistant_label);
-      sw->segment_layers[sw->segment_count++] = layer;
-      if (sw->segment_count >= sw->segment_space) {
+      if (sw->segment_count == sw->segment_space) {
         SegmentLayer** new_block = bmalloc(sizeof(SegmentLayer*) * ++sw->segment_space);
         memcpy(new_block, sw->segment_layers, sizeof(SegmentLayer*) * sw->segment_count);
         free(sw->segment_layers);
         sw->segment_layers = new_block;
       }
+      SegmentLayer* layer = segment_layer_create(GRect(SEGMENT_X, prv_content_height(sw), holder_size.w - SEGMENT_W_PADDING, 10), conv_entry, assistant_label);
+      sw->segment_layers[sw->segment_count++] = layer;
       GRect frame = layer_get_frame(layer);
       frame.origin.y = prv_content_height(sw);
       layer_set_frame(layer, frame);
