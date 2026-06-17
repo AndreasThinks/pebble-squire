@@ -34,6 +34,7 @@ typedef struct {
   TextLayer *hint2_layer;
   char title_text[48];
   char value[MAX_ENTRY_LENGTH + 1];
+  char confirm_label[MAX_ENTRY_LENGTH + 16];
   int value_length;
   int selected_digit;
   int max_length;
@@ -173,8 +174,13 @@ static void prv_submit(AuthEntryWindowData *data) {
 }
 
 static void prv_present_confirm_menu(AuthEntryWindowData* data) {
+  if (data->show_plus_prefix) {
+    snprintf(data->confirm_label, sizeof(data->confirm_label), "Confirm +%s", data->value);
+  } else {
+    snprintf(data->confirm_label, sizeof(data->confirm_label), "Confirm %s", data->value);
+  }
   ActionMenuLevel* root_level = baction_menu_level_create(2);
-  action_menu_level_add_action(root_level, "Confirm", prv_confirm_menu_selected, (void *)true);
+  action_menu_level_add_action(root_level, data->confirm_label, prv_confirm_menu_selected, (void *)true);
   action_menu_level_add_action(root_level, "Edit", prv_confirm_menu_selected, (void *)false);
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = root_level,
