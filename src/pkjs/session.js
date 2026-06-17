@@ -132,18 +132,49 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
     var processedIds = {};
     var botUserId = null;
 
-    function done(result) {
+    // Keep references to the handlers and event builders we register so we
+    // can remove them when this conversation ends. GramJS's removeEventHandler
+    // matches by reference equality on both the callback and the builder, so
+    // these must be the exact instances passed to addEventHandler. Without
+    // removal, every new Session would pile another handler onto the shared
+    // client, and after N conversations each incoming message would be
+    // processed N times.
+    var messageHandler = null;
+    var messageBuilder = null;
+    var typingHandler = null;
+    var typingBuilder = null;
+
+    function cleanup() {
+        try {
+            if (messageHandler && messageBuilder) {
+                client.removeEventHandler(messageHandler, messageBuilder);
+            }
+        } catch (err) {
+            console.log('[session] removeEventHandler (message) failed:', err.message || err);
+        }
+        try {
+            if (typingHandler && typingBuilder) {
+                client.removeEventHandler(typingHandler, typingBuilder);
+            }
+        } catch (err) {
+            console.log('[session] removeEventHandler (typing) failed:', err.message || err);
+        }
+    }
+
+    function finish(settle, value) {
         if (resolved) return;
         resolved = true;
         clearTimeout(timeoutId);
         clearTimeout(idleTimeoutId);
-        resolve(result);
+        cleanup();
+        settle(value);
     }
 
+    function done(result) { finish(resolve, result); }
+    function fail(err) { finish(reject, err); }
+
     var timeoutId = setTimeout(function() {
-        if (resolved) return;
-        resolved = true;
-        reject(new Error('Timeout waiting for response from agent'));
+        fail(new Error('Timeout waiting for response from agent'));
     }, timeout);
 
     // Idle timeout: 60 seconds after the last activity (message or typing),
@@ -151,33 +182,29 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
     // response we keep waiting so slow agents don't get cut off.
     var IDLE_TIMEOUT = 60000;
     var idleTimeoutId = setTimeout(function() {
-        if (resolved) return;
         if (!self.hasOpenDialog) {
             console.log('[session] Idle timeout fired before first response, still waiting');
             resetIdleTimeout();
             return;
         }
         console.log('[session] Idle timeout (60s since last activity)');
-        resolved = true;
         self.hasOpenDialog = false;
         self.enqueue({ CHAT_DONE: true });
-        resolve({ complete: true });
+        done({ complete: true });
     }, IDLE_TIMEOUT);
 
     function resetIdleTimeout() {
         clearTimeout(idleTimeoutId);
         idleTimeoutId = setTimeout(function() {
-            if (resolved) return;
             if (!self.hasOpenDialog) {
                 console.log('[session] Idle timeout fired before first response, still waiting');
                 resetIdleTimeout();
                 return;
             }
             console.log('[session] Idle timeout (60s since last activity)');
-            resolved = true;
             self.hasOpenDialog = false;
             self.enqueue({ CHAT_DONE: true });
-            resolve({ complete: true });
+            done({ complete: true });
         }, IDLE_TIMEOUT);
     }
 
@@ -185,7 +212,8 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
 
     if (typeof NewMessage !== 'undefined') {
         try {
-            client.addEventHandler(function(event) {
+            messageBuilder = new NewMessage({ incoming: true });
+            messageHandler = function(event) {
                 try {
                     if (resolved) return;
                     var msg = event.message;
@@ -198,21 +226,23 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
                 } catch (err) {
                     console.error('[session] Error handling message:', err);
                 }
-            }, new NewMessage({ incoming: true }));
+            };
+            client.addEventHandler(messageHandler, messageBuilder);
             console.log('[session] Event handler registered successfully (incoming only)');
         } catch (err) {
             console.error('[session] Failed to register event handler:', err);
-            reject(new Error('Failed to register Telegram event handler'));
+            fail(new Error('Failed to register Telegram event handler'));
         }
     } else {
         console.error('[session] NewMessage is undefined, cannot register event handler');
-        reject(new Error('Telegram event support not available'));
+        fail(new Error('Telegram event support not available'));
     }
 
     // Listen for typing indicators from the bot
     if (typeof Raw !== 'undefined') {
         try {
-            client.addEventHandler(function(update) {
+            typingBuilder = new Raw({});
+            typingHandler = function(update) {
                 try {
                     if (resolved) return;
                     if (!update || !update.userId) return;
@@ -225,7 +255,8 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
                 } catch (err) {
                     // Ignore errors from unrelated updates
                 }
-            }, new Raw({}));
+            };
+            client.addEventHandler(typingHandler, typingBuilder);
             console.log('[session] Typing indicator handler registered');
         } catch (err) {
             console.log('[session] Could not register typing handler:', err.message || err);
