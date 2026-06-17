@@ -264,7 +264,7 @@ Session.prototype.listenForResponse = function(client, botUsername, resolve, rej
     }
 
     // Resolve the bot's user ID so we can match typing events
-    if (typeof Api !== 'undefined') {
+    if (typeof TelegramApi !== 'undefined') {
         try {
             client.getEntity(botUsername).then(function(entity) {
                 if (entity && entity.id) {
