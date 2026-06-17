@@ -21,7 +21,6 @@
  */
 
 var session = require('./session');
-var messages = require('./messages');
 
 // Client instance
 var client = null;

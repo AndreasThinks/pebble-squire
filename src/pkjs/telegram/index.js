@@ -22,7 +22,6 @@
 var client = require('./client');
 var auth = require('./auth');
 var session = require('./session');
-var messages = require('./messages');
 
 module.exports = {
     // Client
@@ -48,12 +47,5 @@ module.exports = {
     hasSession: session.hasSession,
     saveBotUsername: session.saveBotUsername,
     getBotUsername: session.getBotUsername,
-    getSessionInfo: session.getSessionInfo,
-
-    // Messages
-    sendMessage: messages.sendMessage,
-    onMessage: messages.onMessage,
-    startListening: messages.startListening,
-    sendAndWaitForResponse: messages.sendAndWaitForResponse,
-    sendStreamingRequest: messages.sendStreamingRequest
+    getSessionInfo: session.getSessionInfo
 };
