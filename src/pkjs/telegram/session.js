@@ -99,7 +99,12 @@ function getBotUsername() {
     var username = localStorage.getItem(BOT_USERNAME_KEY);
     if (!username) {
         // Get from clay-settings as fallback
-        var settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
+        var settings = {};
+        try {
+            settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
+        } catch (e) {
+            console.error('Failed to parse clay-settings:', e);
+        }
         username = settings.AGENT_TELEGRAM_USERNAME || '@MyAgentBot';
     }
     // Normalize

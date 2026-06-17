@@ -33,7 +33,12 @@ function Session(prompt, threadId) {
 }
 
 function getSettings() {
-    return JSON.parse(localStorage.getItem('clay-settings')) || {};
+    try {
+        return JSON.parse(localStorage.getItem('clay-settings')) || {};
+    } catch (e) {
+        console.error('Failed to parse clay-settings:', e);
+        return {};
+    }
 }
 
 Session.prototype.run = function() {
