@@ -55,14 +55,11 @@ void history_set_thread_id(const char* thread_id) {
 }
 
 static void prv_shift_if_full(void) {
-  if (s_count <= HISTORY_MAX_ENTRIES) return;
-  int shift = s_count - HISTORY_MAX_ENTRIES;
-  for (int i = 0; i < HISTORY_MAX_ENTRIES; i++) {
-    if (i + shift < s_count) {
-      s_entries[i] = s_entries[i + shift];
-    }
+  if (s_count < HISTORY_MAX_ENTRIES) return;
+  for (int i = 0; i < HISTORY_MAX_ENTRIES - 1; i++) {
+    s_entries[i] = s_entries[i + 1];
   }
-  s_count = HISTORY_MAX_ENTRIES;
+  s_count = HISTORY_MAX_ENTRIES - 1;
 }
 
 void history_push_prompt(const char* text) {
