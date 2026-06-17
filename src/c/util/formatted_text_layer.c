@@ -171,7 +171,8 @@ static void prv_fragment(FormattedTextLayerData *data) {
     fragment->text_length = 0;
     int hash_count = 0;
     bool hashing = true;
-    while (fragment->text[fragment->text_length] != '\n') {
+    while (fragment->text[fragment->text_length] != '\n' &&
+           fragment->text[fragment->text_length] != '\0') {
       if (hashing && fragment->text[fragment->text_length] == '#') {
         ++hash_count;
         ++fragment->text;
