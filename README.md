@@ -40,9 +40,12 @@ Watch App → Phone App (pkjs) → Telegram MTProto → Hermes/OpenClaw Bot
 ### 2. Configuration
 
 1. Open the application settings on your phone (or run `./open-clay-config.py` in the emulator)
-2. Enter your Hermes or OpenClaw bot username (e.g., `@MySquireBot`) and your Telegram phone number in international format (e.g., `+1234567890`)
-3. Press Save — a verification code will be sent to your Telegram app
-4. Re-open the settings, enter the verification code, and press Save
+2. Enter your Hermes or OpenClaw bot username (e.g., `@MySquireBot`) and press Save
+3. Launch Squire on the watch — it will prompt you to sign in to Telegram directly from the watch:
+   - Enter your phone number in international format (e.g., `+1234567890`)
+   - A verification code is sent to your Telegram app; enter it on the watch when prompted
+   - If your account has 2FA enabled, you'll also be asked for your password
+4. Use the **Disconnect** button in the phone settings to sign out of Telegram
 
 ## Development
 
