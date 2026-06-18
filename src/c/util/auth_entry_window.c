@@ -167,10 +167,13 @@ static void prv_update_display(AuthEntryWindowData* data) {
 
 static void prv_submit(AuthEntryWindowData *data) {
   if (data->value_length == 0) return;
-  if (data->callback) {
-    data->callback(data->value);
-  }
+  AuthEntryCallback cb = data->callback;
+  char value[MAX_ENTRY_LENGTH + 1];
+  memcpy(value, data->value, data->value_length + 1);
   window_stack_pop(true);
+  if (cb) {
+    cb(value);
+  }
 }
 
 static void prv_present_confirm_menu(AuthEntryWindowData* data) {

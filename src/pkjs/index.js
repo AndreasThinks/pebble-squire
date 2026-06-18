@@ -109,6 +109,12 @@ function handleAppMessage(e) {
         return;
     }
 
+    if ('TELEGRAM_DISCONNECT' in data) {
+        ensureTelegramBundle();
+        handleTelegramDisconnect();
+        return;
+    }
+
     if ('LOCATION_ENABLED' in data) {
         config.setSetting("LOCATION_ENABLED", !!data.LOCATION_ENABLED);
         console.log("Location enabled: " + config.isLocationEnabled());

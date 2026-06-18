@@ -60,7 +60,8 @@
       "TELEGRAM_START_AUTH",
       "TELEGRAM_PROVIDE_CODE",
       "TELEGRAM_CODE_SENT",
-      "TELEGRAM_AUTH_ERROR"
+      "TELEGRAM_AUTH_ERROR",
+      "TELEGRAM_DISCONNECT"
     ],
     "resources": {
       "media": [

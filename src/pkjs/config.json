@@ -60,7 +60,7 @@
                 "type": "text",
                 "id": "telegramInstructions",
                 "label": "",
-                "defaultValue": "Sign in to Telegram directly from the watch. Use the button below only to disconnect."
+                "defaultValue": "Sign in to Telegram directly from the watch. Disconnect is available in the app's More menu."
             },
             {
                 "type": "input",
@@ -69,11 +69,6 @@
                 "label": "Agent Bot Username",
                 "description": "Enter the username of your OpenClaw or Hermes bot (e.g., @MyOpenClawBot or @MyHermesBot). OpenClaw and Hermes are both supported.",
                 "defaultValue": "@MyAgentBot"
-            },
-            {
-                "type": "button",
-                "id": "disconnectBtn",
-                "defaultValue": "Disconnect"
             }
         ]
     },

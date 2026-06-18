@@ -14,13 +14,10 @@
  * limitations under the License.
  */
 
-var telegram = require('./telegram');
-
 module.exports = function(minified) {
     var clayConfig = this;
 
     var botInput;
-    var disconnectBtn;
 
     var BOT_USERNAME_KEY = 'agent_telegram_username';
 
@@ -33,20 +30,6 @@ module.exports = function(minified) {
 
     clayConfig.on(clayConfig.EVENTS.AFTER_BUILD, function() {
         botInput = clayConfig.getItemByMessageKey('AGENT_TELEGRAM_USERNAME');
-        disconnectBtn = clayConfig.getItemById('disconnectBtn');
-
-        if (disconnectBtn) {
-            disconnectBtn.show();
-            disconnectBtn.on('click', function() {
-                console.log('[config] Disconnect button clicked');
-                telegram.logout().then(function() {
-                    console.log('[config] Disconnected successfully');
-                    Pebble.sendAppMessage({ TELEGRAM_CONNECTED: 0 });
-                }).catch(function(err) {
-                    console.error('[config] Failed to disconnect: ' + err.message);
-                });
-            });
-        }
 
         if (botInput) {
             botInput.on('change', function() {

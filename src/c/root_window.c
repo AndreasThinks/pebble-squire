@@ -22,11 +22,15 @@
 #include "converse/session_window.h"
 #include "converse/history.h"
 #include "menus/about_window.h"
+#include "menus/sample_prompts_menu.h"
 #include "util/logging.h"
 #include "util/style.h"
 #include "util/thinking_layer.h"
 #include "util/memory/malloc.h"
 #include "util/memory/sdk.h"
+#include "util/result_window.h"
+#include "util/action_menu_crimes.h"
+#include "settings/settings.h"
 #include "vibes/haptic_feedback.h"
 
 static const char* const PRV_GREETINGS[] = {
@@ -52,8 +56,9 @@ struct RootWindow {
   GBitmap* more_icon;
   TalkingSquireLayer* talking_squire_layer;
   EventHandle app_message_handle;
-  char** sample_prompts;
   bool talking_squire_overridden;
+  ActionMenu* disconnect_confirm_menu;
+  bool disconnect_confirmed;
 };
 
 static void prv_window_load(Window* window);
@@ -61,12 +66,14 @@ static void prv_window_appear(Window* window);
 static void prv_window_disappear(Window* window);
 static void prv_click_config_provider(void *context);
 static void prv_prompt_clicked(ClickRecognizerRef recognizer, void *context);
+static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context);
 static void prv_more_clicked(ClickRecognizerRef recognizer, void* context);
 static void prv_up_clicked(ClickRecognizerRef recognizer, void *context);
-static int prv_load_suggestions(char*** suggestions);
 static void prv_action_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context);
-static void prv_suggestion_clicked(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
 static void prv_menu_about(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
+static void prv_menu_disconnect(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
+static void prv_disconnect_confirm_selected(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
+static void prv_disconnect_confirm_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context);
 static void prv_app_message_handler(DictionaryIterator *iter, void *context);
 
 RootWindow* root_window_create() {
@@ -161,6 +168,7 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
 static void prv_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_UP, prv_up_clicked);
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_prompt_clicked);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 0, prv_select_long_pressed, NULL);
   window_single_click_subscribe(BUTTON_ID_DOWN, prv_more_clicked);
 }
 
@@ -204,6 +212,10 @@ static void prv_push_loading_window(void) {
 }
 
 static void prv_up_clicked(ClickRecognizerRef recognizer, void *context) {
+  sample_prompts_menu_push();
+}
+
+static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context) {
   if (history_is_available()) {
     session_window_push_with_history(0, NULL, history_get_thread_id());
   } else if (history_is_loading()) {
@@ -216,16 +228,7 @@ static void prv_up_clicked(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void prv_action_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context) {
-  RootWindow* rw = context;
   action_menu_hierarchy_destroy(action_menu_get_root_level(action_menu), NULL, NULL);
-  // memory is allocated for sample_prompts[0], but not the rest of the entries - so just free the first one.
-  free(rw->sample_prompts[0]);
-  free(rw->sample_prompts);
-}
-
-static void prv_suggestion_clicked(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
-  char* suggestion = action_menu_item_get_label(action);
-  session_window_push(0, suggestion);
 }
 
 static void prv_prompt_clicked(ClickRecognizerRef recognizer, void *context) {
@@ -235,14 +238,11 @@ static void prv_prompt_clicked(ClickRecognizerRef recognizer, void *context) {
 
 static void prv_more_clicked(ClickRecognizerRef recognizer, void* context) {
   RootWindow* rw = context;
-  char **suggestions;
-  int count = prv_load_suggestions(&suggestions);
-  ActionMenuLevel *level = baction_menu_level_create(1 + count);
+  // About + Disconnect (with separator before Disconnect)
+  ActionMenuLevel *level = baction_menu_level_create(2);
   action_menu_level_add_action(level, "About", prv_menu_about, NULL);
-  for (int i = 0; i < count; ++i) {
-    action_menu_level_add_action(level, suggestions[i], prv_suggestion_clicked, rw);
-  }
-  rw->sample_prompts = suggestions;
+  action_menu_level_set_separator_index(level, 1);
+  action_menu_level_add_action(level, "Disconnect", prv_menu_disconnect, rw);
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = level,
     .colors = {
@@ -260,25 +260,47 @@ static void prv_menu_about(ActionMenu *action_menu, const ActionMenuItem *action
   about_window_push();
 }
 
-static int prv_load_suggestions(char*** suggestions) {
-  ResHandle handle = resource_get_handle(RESOURCE_ID_SAMPLE_PROMPTS);
-  size_t size = resource_size(handle);
-  char* buffer = bmalloc(size);
-  resource_load(handle, (uint8_t*)buffer, size);
-  int count = 1;
-  for (size_t i = 0; i < size; ++i) {
-    if (buffer[i] == '\n') {
-      ++count;
+static void prv_menu_disconnect(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
+  RootWindow* rw = context;
+  if (!settings_is_telegram_connected()) {
+    result_window_push("Not Connected", "Telegram is not currently connected.", NULL, GColorWhite);
+    return;
+  }
+  ActionMenuLevel *confirm_level = baction_menu_level_create(2);
+  action_menu_level_add_action(confirm_level, "Disconnect", prv_disconnect_confirm_selected, (void*)true);
+  action_menu_level_add_action(confirm_level, "Cancel", prv_disconnect_confirm_selected, (void*)false);
+  ActionMenuConfig config = (ActionMenuConfig) {
+    .root_level = confirm_level,
+    .colors = {
+      .background = BRANDED_BACKGROUND_COLOUR,
+      .foreground = gcolor_legible_over(BRANDED_BACKGROUND_COLOUR),
+    },
+    .align = ActionMenuAlignCenter,
+    .context = rw,
+    .did_close = prv_disconnect_confirm_menu_closed,
+  };
+  rw->disconnect_confirmed = false;
+  rw->disconnect_confirm_menu = action_menu_open(&config);
+}
+
+static void prv_disconnect_confirm_selected(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
+  RootWindow* rw = context;
+  rw->disconnect_confirmed = (bool)action_menu_item_get_action_data(action);
+}
+
+static void prv_disconnect_confirm_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context) {
+  RootWindow* rw = context;
+  action_menu_hierarchy_destroy(action_menu_get_root_level(action_menu), NULL, NULL);
+  rw->disconnect_confirm_menu = NULL;
+  if (rw->disconnect_confirmed) {
+    rw->disconnect_confirmed = false;
+    DictionaryIterator *iter;
+    if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
+      dict_write_int8(iter, MESSAGE_KEY_TELEGRAM_DISCONNECT, 1);
+      app_message_outbox_send();
+      result_window_push("Disconnecting", "Signing out of Telegram...", NULL, GColorWhite);
+    } else {
+      result_window_push("Error", "Could not reach phone. Try again.", NULL, GColorWhite);
     }
   }
-  *suggestions = bmalloc(sizeof(char*) * count);
-  for (int i = 0; i < count; ++i) {
-    (*suggestions)[i] = buffer;
-    buffer = strchr(buffer, '\n');
-    if (buffer) {
-      *buffer = '\0';
-      ++buffer;
-    }
-  }
-  return count;
 }
