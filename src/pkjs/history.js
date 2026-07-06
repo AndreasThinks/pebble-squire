@@ -2,7 +2,7 @@ var messageQueue = require('./lib/message_queue').Queue;
 var bundleLoader = require('./lib/bundle_loader');
 var telegram = require('./telegram');
 
-var HISTORY_LIMIT = 4;
+var HISTORY_LIMIT = 8;
 
 function formatLoggedMessage(message) {
     if (!message) return '';
@@ -36,7 +36,7 @@ function fetchAndSendHistory() {
         }
         var cleanUsername = botUsername.replace(/^@/, '');
 
-        client.getMessages(cleanUsername, { limit: 20 }).then(function(messages) {
+        client.getMessages(cleanUsername, { limit: 50 }).then(function(messages) {
             console.log('[history] total messages returned: ' + (messages ? messages.length : 0));
             if (!messages || messages.length === 0) {
                 console.log('[history] No messages found');
