@@ -31,7 +31,11 @@ typedef struct {
   char **prompts;
   int count;
   bool using_history;
+  bool waiting_for_history;
 } SamplePromptsMenuData;
+
+// The window currently showing, so the history-done callback can refresh it.
+static Window *s_window;
 
 static void prv_window_load(Window* window);
 static void prv_window_unload(Window* window);
@@ -71,12 +75,25 @@ void sample_prompts_menu_push() {
   window_stack_push(window, true);
 }
 
-static void prv_window_load(Window* window) {
-  SamplePromptsMenuData *data = window_get_user_data(window);
-  Layer *root_layer = window_get_root_layer(window);
-  GRect window_bounds = layer_get_frame(root_layer);
+static void prv_free_prompts(SamplePromptsMenuData *data) {
+  if (data->prompts) {
+    free(data->prompts);
+    data->prompts = NULL;
+  }
+  if (data->buffer) {
+    free(data->buffer);
+    data->buffer = NULL;
+  }
+  data->count = 0;
+}
 
-  // If history is available, use it. Otherwise fall back to canned prompts.
+// Pick the prompt source. History wins when it's ready; while the phone is
+// still fetching it we show a loading row (and refresh when it lands) rather
+// than silently committing to the canned fallback.
+static void prv_load_source(SamplePromptsMenuData *data) {
+  prv_free_prompts(data);
+  data->waiting_for_history = false;
+
   if (history_is_available()) {
     int hist_count = history_get_count();
     int prompt_count = 0;
@@ -96,8 +113,10 @@ static void prv_window_load(Window* window) {
         idx++;
       }
     }
-    data->buffer = NULL;
     data->using_history = true;
+  } else if (history_is_loading()) {
+    data->using_history = true;
+    data->waiting_for_history = true;
   } else {
     ResHandle handle = resource_get_handle(RESOURCE_ID_SAMPLE_PROMPTS);
     size_t size = resource_size(handle);
@@ -108,6 +127,27 @@ static void prv_window_load(Window* window) {
     data->buffer[size] = '\0';
     data->count = prv_load_prompts(data->buffer, size, &data->prompts);
     data->using_history = false;
+  }
+}
+
+static void prv_history_done(void) {
+  if (!s_window) {
+    return;
+  }
+  SamplePromptsMenuData *data = window_get_user_data(s_window);
+  prv_load_source(data);
+  menu_layer_reload_data(data->menu_layer);
+}
+
+static void prv_window_load(Window* window) {
+  SamplePromptsMenuData *data = window_get_user_data(window);
+  Layer *root_layer = window_get_root_layer(window);
+  GRect window_bounds = layer_get_frame(root_layer);
+
+  s_window = window;
+  prv_load_source(data);
+  if (data->waiting_for_history) {
+    history_set_done_callback(prv_history_done);
   }
 
   window_set_background_color(window, GColorWhite);
@@ -133,12 +173,13 @@ static void prv_window_load(Window* window) {
 
 static void prv_window_unload(Window* window) {
   SamplePromptsMenuData *data = window_get_user_data(window);
+  if (data->waiting_for_history) {
+    history_set_done_callback(NULL);
+  }
+  s_window = NULL;
   menu_layer_destroy(data->menu_layer);
   status_bar_layer_destroy(data->status_bar);
-  free(data->prompts);
-  if (data->buffer) {
-    free(data->buffer);
-  }
+  prv_free_prompts(data);
   free(data);
   window_destroy(window);
 }
@@ -153,7 +194,7 @@ static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   SamplePromptsMenuData *data = context;
 
   if (data->count == 0) {
-    const char *empty = "No history yet";
+    const char *empty = data->waiting_for_history ? "Loading history..." : "No history yet";
 #ifdef PBL_ROUND
     GRect bounds = layer_get_bounds(cell_layer);
     graphics_draw_text(ctx, empty,
