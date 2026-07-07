@@ -142,6 +142,7 @@ static void prv_window_disappear(Window* window) {
   RootWindow* rw = window_get_user_data(window);
   if (rw->app_message_handle) {
     events_app_message_unsubscribe(rw->app_message_handle);
+    rw->app_message_handle = NULL;
   }
   action_bar_layer_destroy(rw->action_bar);
   gbitmap_destroy(rw->question_icon);

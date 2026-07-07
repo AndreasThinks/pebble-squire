@@ -101,8 +101,11 @@ static void prv_window_load(Window* window) {
   } else {
     ResHandle handle = resource_get_handle(RESOURCE_ID_SAMPLE_PROMPTS);
     size_t size = resource_size(handle);
-    data->buffer = bmalloc(size);
+    // The resource is raw text with no terminator; add one so the last
+    // prompt doesn't read past the end of the buffer.
+    data->buffer = bmalloc(size + 1);
     resource_load(handle, (uint8_t*)data->buffer, size);
+    data->buffer[size] = '\0';
     data->count = prv_load_prompts(data->buffer, size, &data->prompts);
     data->using_history = false;
   }

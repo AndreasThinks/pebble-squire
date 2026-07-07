@@ -43,7 +43,9 @@ exports.update = function() {
 }
 
 exports.isReady = function() {
-    return !!(cachedLon && cachedLat);
+    // Compare against undefined rather than truthiness: latitude or longitude
+    // of exactly 0 (the equator / prime meridian) is a valid position.
+    return cachedLon !== undefined && cachedLat !== undefined;
 }
 
 exports.getPos = function() {

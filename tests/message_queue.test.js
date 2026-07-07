@@ -37,6 +37,42 @@ describe('MessageQueue chunking', () => {
         expect(reassembled).toBe(big);
     });
 
+    it('chunks by UTF-8 byte length so multibyte text fits the watch inbox', () => {
+        // 3000 characters that each encode to 3 UTF-8 bytes (9000 bytes total):
+        // under the old code-unit limit of 4000 this went out as a single
+        // message and blew the watch's 5000-byte inbox.
+        var big = '';
+        for (var i = 0; i < 3000; i++) big += '日';
+        Queue.enqueue({ CHAT: big });
+
+        expect(sendAppMessage.mock.calls.length).toBeGreaterThan(1);
+        var reassembled = '';
+        for (var c = 0; c < sendAppMessage.mock.calls.length; c++) {
+            var chunk = sendAppMessage.mock.calls[c][0].CHAT;
+            expect(Buffer.byteLength(chunk, 'utf8')).toBeLessThanOrEqual(4000);
+            reassembled += chunk;
+        }
+        expect(reassembled).toBe(big);
+    });
+
+    it('never splits a surrogate pair across chunks', () => {
+        // Emoji are surrogate pairs (4 UTF-8 bytes each).
+        var big = '';
+        for (var i = 0; i < 1500; i++) big += '😀';
+        Queue.enqueue({ CHAT: big });
+
+        var reassembled = '';
+        for (var c = 0; c < sendAppMessage.mock.calls.length; c++) {
+            var chunk = sendAppMessage.mock.calls[c][0].CHAT;
+            // A well-formed chunk never starts with a trailing surrogate or
+            // ends with a leading surrogate.
+            expect(chunk.charCodeAt(0)).not.toBeGreaterThanOrEqual(0xDC00);
+            expect(chunk.charCodeAt(chunk.length - 1)).not.toBeLessThan(0xDC00);
+            reassembled += chunk;
+        }
+        expect(reassembled).toBe(big);
+    });
+
     it('preserves order of surrounding messages around a chunked CHAT', () => {
         var big = '';
         for (var i = 0; i < 5000; i++) big += 'y';

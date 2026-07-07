@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import 'dotenv/config';
 
+// Live-API test: only runs when a real phone number is configured in .env.
+const phone = process.env.TELEGRAM_PHONE;
+const hasCredentials = !!phone && phone !== '+15551234567';
+
 describe('Telegram auth with real API', () => {
-    it('should send auth code to phone', async () => {
-        const phone = process.env.TELEGRAM_PHONE;
-        if (!phone || phone === '+15551234567') {
-            throw new Error('Set your real TELEGRAM_PHONE in .env');
-        }
+    it.skipIf(!hasCredentials)('should send auth code to phone', async () => {
 
         const bundleLoader = require('../src/pkjs/lib/bundle_loader.js');
         bundleLoader.ensureTelegramBundle();

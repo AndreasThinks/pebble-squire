@@ -218,13 +218,15 @@ void conversation_add_error(Conversation* conversation, const char* error_text) 
 }
 
 void conversation_delete_first_entry(Conversation* conversation) {
-  ConversationEntry* entry = &conversation->entries[conversation->deleted_entries];
-  while (entry->type == EntryTypeDeleted && conversation->deleted_entries < conversation->entry_count) {
+  while (conversation->deleted_entries < conversation->entry_count
+         && conversation->entries[conversation->deleted_entries].type == EntryTypeDeleted) {
     conversation->deleted_entries++;
     conversation->nulled_entries--;
-    entry = &conversation->entries[conversation->deleted_entries];
   }
-  prv_destroy_entry(entry);
+  if (conversation->deleted_entries >= conversation->entry_count) {
+    return;
+  }
+  prv_destroy_entry(&conversation->entries[conversation->deleted_entries]);
   conversation->deleted_entries++;
 }
 
@@ -236,6 +238,7 @@ void conversation_delete_last_thought(Conversation* conversation) {
     if (entry->type == EntryTypeThought) {
       SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Deleting thought %d", i);
       prv_destroy_entry(entry);
+      conversation->nulled_entries++;
       return;
     }
   }

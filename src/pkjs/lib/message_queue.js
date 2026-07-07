@@ -31,13 +31,70 @@ function MessageQueue() {
     this.bytesInFlight = 0;
 }
 
+// App messages carry strings as UTF-8, so budgets must be measured in UTF-8
+// bytes, not UTF-16 code units — 4000 characters of emoji or CJK text would
+// otherwise encode to far more than the watch's 5000-byte inbox.
+function utf8Length(str) {
+    var bytes = 0;
+    for (var i = 0; i < str.length; i++) {
+        var code = str.charCodeAt(i);
+        if (code < 0x80) {
+            bytes += 1;
+        } else if (code < 0x800) {
+            bytes += 2;
+        } else if (code >= 0xD800 && code <= 0xDBFF) {
+            // Lead surrogate: the pair encodes to 4 bytes.
+            bytes += 4;
+            i++;
+        } else {
+            bytes += 3;
+        }
+    }
+    return bytes;
+}
+
+// Split a string into pieces of at most maxBytes UTF-8 bytes each, never
+// splitting a surrogate pair.
+function chunkByUtf8Bytes(str, maxBytes) {
+    var chunks = [];
+    var start = 0;
+    var bytes = 0;
+    var i = 0;
+    while (i < str.length) {
+        var code = str.charCodeAt(i);
+        var charUnits = 1;
+        var charBytes;
+        if (code < 0x80) {
+            charBytes = 1;
+        } else if (code < 0x800) {
+            charBytes = 2;
+        } else if (code >= 0xD800 && code <= 0xDBFF) {
+            charBytes = 4;
+            charUnits = 2;
+        } else {
+            charBytes = 3;
+        }
+        if (bytes + charBytes > maxBytes && i > start) {
+            chunks.push(str.substring(start, i));
+            start = i;
+            bytes = 0;
+        }
+        bytes += charBytes;
+        i += charUnits;
+    }
+    if (start < str.length) {
+        chunks.push(str.substring(start));
+    }
+    return chunks;
+}
+
 function countBytes(message) {
     var bytes = 0;
     for (var key in message) {
         if (message.hasOwnProperty(key)) {
             var value = message[key];
             if (typeof value === 'string') {
-                bytes += value.length;
+                bytes += utf8Length(value);
             } else if (typeof value === 'number') {
                 bytes += 4; // 4 bytes for numbers
             } else if (typeof value == 'boolean') {
@@ -110,13 +167,10 @@ MessageQueue.prototype.pump = function() {
     for (var i = 0; i < REASSEMBLABLE_KEYS.length; i++) {
         var key = REASSEMBLABLE_KEYS[i];
         if (message.hasOwnProperty(key) && typeof message[key] === 'string' &&
-            message[key].length > MAX_CHAT_CHUNK_SIZE) {
+            utf8Length(message[key]) > MAX_CHAT_CHUNK_SIZE) {
             var full = message[key];
-            var chunks = [];
-            for (var offset = 0; offset < full.length; offset += MAX_CHAT_CHUNK_SIZE) {
-                chunks.push(full.substring(offset, offset + MAX_CHAT_CHUNK_SIZE));
-            }
-            console.log('chunking ' + key + ' (' + full.length + ' bytes) into ' + chunks.length + ' pieces');
+            var chunks = chunkByUtf8Bytes(full, MAX_CHAT_CHUNK_SIZE);
+            console.log('chunking ' + key + ' (' + utf8Length(full) + ' bytes) into ' + chunks.length + ' pieces');
             // unshift in reverse so they come off the front in order.
             for (var c = chunks.length - 1; c >= 0; c--) {
                 this.queue.unshift({ CHAT: chunks[c] });
