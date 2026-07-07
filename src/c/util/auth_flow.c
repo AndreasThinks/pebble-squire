@@ -103,6 +103,14 @@ void auth_flow_handle_message(uint32_t key, const char* value) {
       cb(true, s_agent_username[0] ? s_agent_username : NULL);
       s_agent_username[0] = '\0';
     }
+  } else if (key == MESSAGE_KEY_TELEGRAM_PASSWORD_NEEDED) {
+    // Two-step verification: the password can't be entered on the watch.
+    // Keep the flow pending — once the password is entered on the phone's
+    // settings page, TELEGRAM_CONNECTED will arrive and complete it.
+    result_window_push_persistent("Two-Step Verification",
+        "Your account has a Telegram cloud password. Open Squire's settings in the Pebble phone app and enter it there to finish signing in.",
+        NULL, GColorWhite);
+    s_waiting_for_code = false;
   } else if (key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
     result_window_push_persistent("Auth Failed", "Could not sign in to Telegram. Please try again.", NULL, GColorWhite);
     if (s_complete_callback) {

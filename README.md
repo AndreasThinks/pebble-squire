@@ -32,20 +32,38 @@ Watch App → Phone App (pkjs) → Telegram MTProto → Hermes/OpenClaw Bot
 
 ### 1. Building the App
 
-1. Install the [Pebble SDK](https://developer.rebble.io/developer.pebble.com/sdk/index.html)
-2. Clone this repository
-3. Build: `pebble build`
-4. Install: `pebble install`
+1. Install the [pebble-tool](https://pypi.org/project/pebble-tool/) (Python 3.10+): `pip install pebble-tool` (or `uv tool install pebble-tool`)
+2. Install the SDK: `pebble sdk install latest`
+3. Clone this repository
+4. Build: `pebble build`
+5. Install: `pebble install`
 
 ### 2. Configuration
 
 1. Open the application settings on your phone (or run `./open-clay-config.py` in the emulator)
 2. Enter your Hermes or OpenClaw bot username (e.g., `@MySquireBot`) and press Save
-3. Launch Squire on the watch — it will prompt you to sign in to Telegram directly from the watch:
-   - Enter your phone number in international format (e.g., `+1234567890`)
-   - A verification code is sent to your Telegram app; enter it on the watch when prompted
-   - If your account has 2FA enabled, you'll also be asked for your password
-4. Use the **Disconnect** button in the phone settings to sign out of Telegram
+3. Sign in to Telegram, either from the watch or from the settings page:
+   - **From the watch**: launch Squire and follow the prompts — enter your
+     phone number in international format (e.g., `+1234567890`), then the
+     verification code Telegram sends you.
+   - **From the settings page**: enter your phone number in the *Telegram
+     Sign-In* section and press Save. Telegram sends you a login code; reopen
+     the settings page, enter the code, and press Save again.
+   - **Two-step verification (2FA)**: the cloud password can't be entered on
+     the watch — enter it in the *Telegram Sign-In* section of the settings
+     page along with the login code. Sign-in fields are cleared after each
+     attempt and never stored.
+4. Use the **Disconnect** option in the watch app's More menu to sign out of
+   Telegram (this also revokes the session server-side)
+
+### Agent integration notes
+
+- Squire prefixes each prompt with a `<system>...</system>` block containing
+  device context, and continues conversations with a `[thread:<id>]` prefix.
+- Squire normally decides a reply is finished after ~2 seconds without a new
+  message. If your agent sends multi-part replies with longer pauses, have it
+  end its final message with `[done]` — Squire strips the marker and closes
+  the conversation immediately.
 
 ## Development
 

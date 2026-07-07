@@ -73,6 +73,42 @@ describe('MessageQueue chunking', () => {
         expect(reassembled).toBe(big);
     });
 
+    it('retries a failed send and delivers on a later attempt', async () => {
+        var attempts = 0;
+        sendAppMessage.mockImplementation((msg, success, failure) => {
+            attempts++;
+            if (attempts < 3) {
+                failure();
+            } else {
+                success();
+            }
+        });
+
+        Queue.enqueue({ CHAT_DONE: true });
+        // Retries are scheduled at 250ms and then 500ms.
+        await new Promise(r => setTimeout(r, 900));
+
+        expect(attempts).toBe(3);
+    });
+
+    it('gives up after the retry budget is exhausted and keeps pumping', async () => {
+        sendAppMessage.mockImplementation((msg, success, failure) => {
+            if (msg.CHAT === 'doomed') {
+                failure();
+            } else {
+                success();
+            }
+        });
+
+        Queue.enqueue({ CHAT: 'doomed' });
+        Queue.enqueue({ CHAT: 'next' });
+        await new Promise(r => setTimeout(r, 900));
+
+        var sent = sendAppMessage.mock.calls.map(c => c[0]);
+        expect(sent.filter(m => m.CHAT === 'doomed').length).toBe(3);
+        expect(sent.some(m => m.CHAT === 'next')).toBe(true);
+    });
+
     it('preserves order of surrounding messages around a chunked CHAT', () => {
         var big = '';
         for (var i = 0; i < 5000; i++) big += 'y';

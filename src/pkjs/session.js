@@ -275,18 +275,44 @@ function formatLoggedMessage(message) {
     return withoutSystem.substring(0, 50) + '...' + withoutSystem.substring(withoutSystem.length - 50);
 }
 
+// Agents that pause for more than the idle window mid-reply cause premature
+// "done" states, so they can instead end their final message with an explicit
+// [done] marker to close the conversation immediately. The marker is stripped
+// before display; the idle timer below remains the fallback for agents that
+// don't use it.
+var END_MARKER_RE = /\s*\[done\]\s*$/i;
+
 Session.prototype.handleIncomingMessage = function(message, resolve) {
     console.log('Received message:', formatLoggedMessage(message));
 
+    var isFinal = END_MARKER_RE.test(message);
+    if (isFinal) {
+        message = message.replace(END_MARKER_RE, '');
+    }
+
     this.hasOpenDialog = true;
-    this.enqueue({
-        CHAT: message
-    });
+    if (message.length > 0 || !isFinal) {
+        this.enqueue({
+            CHAT: message
+        });
+    }
 
     var self = this;
     if (this._doneTimer) {
         clearTimeout(this._doneTimer);
+        this._doneTimer = null;
     }
+
+    if (isFinal) {
+        console.log('[session] End marker received, completing conversation');
+        this.hasOpenDialog = false;
+        this.enqueue({
+            CHAT_DONE: true
+        });
+        resolve({ complete: true });
+        return;
+    }
+
     this._doneTimer = setTimeout(function() {
         self.hasOpenDialog = false;
         self.enqueue({

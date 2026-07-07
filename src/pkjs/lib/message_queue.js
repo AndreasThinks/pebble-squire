@@ -16,6 +16,12 @@
 
 var MAX_BYTES_IN_FLIGHT = 400;
 
+// Transient Bluetooth hiccups are common; retry a failed send a few times
+// before giving up so a dropped CHAT fragment doesn't corrupt the visible
+// reply (or a dropped CHAT_DONE leave the watch spinning forever).
+var MAX_SEND_ATTEMPTS = 3;
+var RETRY_DELAY_MS = 250;
+
 // The watch allocates SQUIRE_APP_MESSAGE_BUFFER_SIZE (5000) bytes for its
 // app-message inbox/outbox (see src/c/converse/conversation_manager.c). A
 // single app message must fit within that budget or it gets dropped, so we
@@ -130,7 +136,8 @@ MessageQueue.prototype.pump = function() {
     if (!message) return;
 
     var self = this;
-    function send(msg) {
+    function send(msg, attempt) {
+        attempt = attempt || 1;
         var mSize = countBytes(msg);
         if (mSize > 5000) {
             console.warn('message exceeds 5000-byte watch inbox limit (' + mSize + ' bytes), will likely be dropped');
@@ -154,7 +161,13 @@ MessageQueue.prototype.pump = function() {
         }).bind(self), (function() {
             self.messagesInFlight--;
             self.bytesInFlight -= mSize;
-            console.log('failed, message lost. carrying on shortly.');
+            if (attempt < MAX_SEND_ATTEMPTS) {
+                var delay = RETRY_DELAY_MS * attempt;
+                console.log('send failed, retrying in ' + delay + 'ms (attempt ' + attempt + '/' + MAX_SEND_ATTEMPTS + ')');
+                setTimeout(function() { send(msg, attempt + 1); }, delay);
+                return;
+            }
+            console.log('failed after ' + attempt + ' attempts, message lost. carrying on shortly.');
             if (self.queue.length > 0) {
                 setTimeout(function() { self.pump(); }, 10);
             } else {

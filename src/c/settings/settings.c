@@ -90,6 +90,8 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
       }
     } else if (tuple->key == MESSAGE_KEY_TELEGRAM_CODE_SENT) {
       auth_flow_handle_message(tuple->key, NULL);
+    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_PASSWORD_NEEDED) {
+      auth_flow_handle_message(tuple->key, NULL);
     } else if (tuple->key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
       auth_flow_handle_message(tuple->key, NULL);
     }

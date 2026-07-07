@@ -10,6 +10,30 @@ static bool s_done = false;
 static bool s_loading = false;
 static void (*s_done_callback)(void) = NULL;
 
+// Copy with truncation that never leaves a partial UTF-8 sequence at the end
+// of the buffer (a bare strncpy can cut a multi-byte character in half, which
+// renders as garbage).
+static void prv_copy_entry_text(char* dst, const char* src, size_t dst_size) {
+  strncpy(dst, src, dst_size - 1);
+  dst[dst_size - 1] = '\0';
+  size_t len = strlen(dst);
+  if (len < dst_size - 1) {
+    return;  // nothing was truncated
+  }
+  size_t seq_start = len;
+  while (seq_start > 0 && ((unsigned char)dst[seq_start - 1] & 0xC0) == 0x80) {
+    seq_start--;
+  }
+  if (seq_start == 0 || ((unsigned char)dst[seq_start - 1] & 0xC0) != 0xC0) {
+    return;  // ends on a complete character (or isn't UTF-8 at all)
+  }
+  unsigned char lead = (unsigned char)dst[seq_start - 1];
+  size_t expected = (lead & 0xE0) == 0xC0 ? 2 : (lead & 0xF0) == 0xE0 ? 3 : 4;
+  if (expected > len - (seq_start - 1)) {
+    dst[seq_start - 1] = '\0';
+  }
+}
+
 void history_init(void) {
   s_count = 0;
   s_done = false;
@@ -33,8 +57,7 @@ void history_set_done_callback(void (*callback)(void)) {
 void history_add_prompt(const char* text) {
   if (s_count >= HISTORY_MAX_ENTRIES) return;
   s_entries[s_count].type = HistoryEntryTypePrompt;
-  strncpy(s_entries[s_count].text, text, sizeof(s_entries[s_count].text) - 1);
-  s_entries[s_count].text[sizeof(s_entries[s_count].text) - 1] = '\0';
+  prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History prompt %d: %.50s", s_count, text);
 }
@@ -42,8 +65,7 @@ void history_add_prompt(const char* text) {
 void history_add_response(const char* text) {
   if (s_count >= HISTORY_MAX_ENTRIES) return;
   s_entries[s_count].type = HistoryEntryTypeResponse;
-  strncpy(s_entries[s_count].text, text, sizeof(s_entries[s_count].text) - 1);
-  s_entries[s_count].text[sizeof(s_entries[s_count].text) - 1] = '\0';
+  prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History response %d: %.50s", s_count, text);
 }
@@ -65,8 +87,7 @@ static void prv_shift_if_full(void) {
 void history_push_prompt(const char* text) {
   prv_shift_if_full();
   s_entries[s_count].type = HistoryEntryTypePrompt;
-  strncpy(s_entries[s_count].text, text, sizeof(s_entries[s_count].text) - 1);
-  s_entries[s_count].text[sizeof(s_entries[s_count].text) - 1] = '\0';
+  prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History push prompt %d: %.50s", s_count, text);
 }
@@ -74,8 +95,7 @@ void history_push_prompt(const char* text) {
 void history_push_response(const char* text) {
   prv_shift_if_full();
   s_entries[s_count].type = HistoryEntryTypeResponse;
-  strncpy(s_entries[s_count].text, text, sizeof(s_entries[s_count].text) - 1);
-  s_entries[s_count].text[sizeof(s_entries[s_count].text) - 1] = '\0';
+  prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History push response %d: %.50s", s_count, text);
 }

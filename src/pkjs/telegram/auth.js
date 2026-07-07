@@ -239,9 +239,20 @@ function checkConnection() {
 function logout() {
     console.log('[auth] logout called');
     return new Promise(function(resolve, reject) {
-        client.disconnect().then(function() {
+        // If we have a stored session but no live client, connect first so
+        // disconnect() can revoke the session server-side, not just locally.
+        var prep = Promise.resolve();
+        if (!client.isClientConnected() && session.hasSession()) {
+            prep = client.initClient().catch(function(err) {
+                console.log('[auth] Could not connect for server-side logout: ' + (err.message || err) + ' — signing out locally');
+            });
+        }
+        prep.then(function() {
+            return client.disconnect();
+        }).then(function() {
             console.log('[auth] Disconnected and session cleared');
             phoneCodeHash = null;
+            authSession = null;
             resolve();
         }).catch(function(err) {
             console.error('[auth] Logout failed: ' + (err.message || err));

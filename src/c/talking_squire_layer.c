@@ -73,7 +73,8 @@ static void prv_update_layer(Layer *layer, GContext *ctx) {
   const int corner_offset = 6;
   const int padding = 4;
 
-  // Squire position
+  // Squire position. The artwork is 171x177, drawn at its intrinsic size, so
+  // smaller screens centre it and let the legs crop off the bottom edge.
 #if defined(PBL_PLATFORM_EMERY)
   const int squire_height = 177;
   const int squire_width = 171;
@@ -84,6 +85,12 @@ static void prv_update_layer(Layer *layer, GContext *ctx) {
   const int squire_width = 171;
   const int squire_x = (size.w - squire_width) / 2;
   const int squire_y = size.h - squire_height;
+#else
+  const int squire_height = 177;
+  const int squire_width = 171;
+  const int squire_crop = 60;  // legs drawn past the bottom edge
+  const int squire_x = (size.w - squire_width) / 2;
+  const int squire_y = size.h - squire_height + squire_crop;
 #endif
 
 #ifdef PBL_ROUND
@@ -152,6 +159,12 @@ static GRangeHorizontal prv_perimeter_callback(const GPerimeter *perimeter, cons
   const int16_t squire_size = 177;
   const int16_t squire_y_offset = 0;
   const int16_t squire_x = (bounds.size.w - squire_size) / 2;
+#else
+  // Must match prv_update_layer: centred, with the legs cropped below the
+  // bottom edge.
+  const int16_t squire_size = 177;
+  const int16_t squire_y_offset = 60;
+  const int16_t squire_x = (bounds.size.w - 171) / 2;
 #endif
   GPoint wrap_point = layer_convert_point_to_screen(layer, GPoint(squire_x + squire_size, bounds.size.h - squire_size + squire_y_offset));
   // We know the squire is at the bottom of our layer, so we don't bother worrying about text being rendered past it.
