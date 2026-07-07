@@ -302,6 +302,9 @@ static void prv_window_appear(Window *window) {
     sw->dictation_pending = false;
     prv_start_dictation(sw);
   }
+  // disappear cancels the inactivity timer (dictation, action menus); re-arm
+  // it when we come back. No-op for windows created without a timeout.
+  prv_refresh_timeout(sw);
 }
 
 static void prv_window_disappear(Window *window) {
@@ -403,6 +406,10 @@ static void prv_conversation_manager_handler(bool entry_added, void* context) {
       prv_update_thinking_layer(sw);
       prv_set_scroll_height(sw);
       light_enable_interaction();
+      // Streamed fragments update the existing entry rather than adding one,
+      // but they're still activity — without this, the quick-launch timeout
+      // can close the app in the middle of a long reply.
+      prv_refresh_timeout(sw);
     }
     return;
   }
@@ -624,11 +631,18 @@ static void prv_cancel_timeout(SessionWindow* sw) {
 }
 
 static void prv_timed_out(void *ctx) {
-  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Timed out");
   SessionWindow *sw = ctx;
-  // The timer has fired, so the handle is dead; forget it before the pop
-  // triggers disappear/unload, which would otherwise cancel the stale handle.
+  // The timer has fired, so the handle is dead; forget it before anything
+  // else might cancel the stale handle.
   sw->timeout_handle = NULL;
+  // Never close while the agent is still mid-reply (or we're waiting on
+  // one) — losing content is worse than staying open a little longer.
+  if (!conversation_is_idle(conversation_manager_get_conversation(sw->manager))) {
+    SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Timed out, but conversation is active; re-arming");
+    prv_refresh_timeout(sw);
+    return;
+  }
+  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Timed out");
   window_stack_pop(true);
 }
 
