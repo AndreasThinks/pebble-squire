@@ -554,7 +554,8 @@ static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context
   action_menu_level_add_action(action_menu, "\"No.\"", prv_action_menu_input, "No.");
   Conversation *conversation = conversation_manager_get_conversation(sw->manager);
   ConversationEntry *entry = conversation_peek(conversation);
-  EntryType type = conversation_entry_get_type(entry);
+  // An empty conversation is considered idle, so entry can be NULL here.
+  EntryType type = entry ? conversation_entry_get_type(entry) : EntryTypeDeleted;
   int separator_index = 3;
   if (type == EntryTypeError) {
     ConversationEntry *last_prompt = conversation_get_last_of_type(conversation, EntryTypePrompt);
@@ -624,6 +625,10 @@ static void prv_cancel_timeout(SessionWindow* sw) {
 
 static void prv_timed_out(void *ctx) {
   SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Timed out");
+  SessionWindow *sw = ctx;
+  // The timer has fired, so the handle is dead; forget it before the pop
+  // triggers disappear/unload, which would otherwise cancel the stale handle.
+  sw->timeout_handle = NULL;
   window_stack_pop(true);
 }
 

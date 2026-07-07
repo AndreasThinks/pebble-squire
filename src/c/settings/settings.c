@@ -77,13 +77,20 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
         SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to write telegram connected: %d", status);
       }
       SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Telegram connected: %s", tuple->value->int8 ? "true" : "false");
-      const char* username = NULL;
-      Tuple* username_tuple = dict_find(iter, MESSAGE_KEY_AGENT_TELEGRAM_USERNAME);
-      if (username_tuple && username_tuple->length > 0) {
-        username = username_tuple->value->cstring;
+      // Only a positive status is an auth success; a disconnect notification
+      // (e.g. the phone reporting an expired session mid-auth) must not
+      // complete a pending auth flow as signed in.
+      if (tuple->value->int8) {
+        const char* username = NULL;
+        Tuple* username_tuple = dict_find(iter, MESSAGE_KEY_AGENT_TELEGRAM_USERNAME);
+        if (username_tuple && username_tuple->length > 0) {
+          username = username_tuple->value->cstring;
+        }
+        auth_flow_handle_message(tuple->key, username);
       }
-      auth_flow_handle_message(tuple->key, username);
     } else if (tuple->key == MESSAGE_KEY_TELEGRAM_CODE_SENT) {
+      auth_flow_handle_message(tuple->key, NULL);
+    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_PASSWORD_NEEDED) {
       auth_flow_handle_message(tuple->key, NULL);
     } else if (tuple->key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
       auth_flow_handle_message(tuple->key, NULL);

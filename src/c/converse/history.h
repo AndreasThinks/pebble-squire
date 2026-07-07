@@ -3,7 +3,7 @@
 
 #include <pebble.h>
 
-#define HISTORY_MAX_ENTRIES 8
+#define HISTORY_MAX_ENTRIES 16
 
 typedef enum {
   HistoryEntryTypePrompt,
@@ -12,7 +12,7 @@ typedef enum {
 
 typedef struct {
   HistoryEntryType type;
-  char text[256];
+  char text[512];
 } HistoryEntry;
 
 void history_init(void);

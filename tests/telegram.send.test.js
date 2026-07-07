@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import 'dotenv/config';
 
+// Live-API test: only runs when a bot username is configured in .env.
+const botUsername = process.env.AGENT_TELEGRAM_USERNAME;
+
 describe('Telegram send message', () => {
-    it('should resolve bot username and send a message', async () => {
-        const botUsername = process.env.AGENT_TELEGRAM_USERNAME;
-        if (!botUsername) throw new Error('Set AGENT_TELEGRAM_USERNAME in .env');
+    it.skipIf(!botUsername)('should resolve bot username and send a message', async () => {
 
         const bundleLoader = require('../src/pkjs/lib/bundle_loader.js');
         bundleLoader.ensureTelegramBundle();

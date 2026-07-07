@@ -60,7 +60,7 @@
                 "type": "text",
                 "id": "telegramInstructions",
                 "label": "",
-                "defaultValue": "Sign in to Telegram directly from the watch. Disconnect is available in the app's More menu."
+                "defaultValue": "Sign in to Telegram directly from the watch, or from this page below. Disconnect is available in the app's More menu."
             },
             {
                 "type": "input",
@@ -69,6 +69,52 @@
                 "label": "Agent Bot Username",
                 "description": "Enter the username of your OpenClaw or Hermes bot (e.g., @MyOpenClawBot or @MyHermesBot). OpenClaw and Hermes are both supported.",
                 "defaultValue": "@MyAgentBot"
+            }
+        ]
+    },
+    {
+        "type": "section",
+        "items": [
+            {
+                "type": "heading",
+                "defaultValue": "Telegram Sign-In"
+            },
+            {
+                "type": "text",
+                "id": "telegramSignInInstructions",
+                "label": "",
+                "defaultValue": "To sign in from this page: enter your phone number and press Save. Telegram will send you a login code; reopen this page, enter the code (and your two-step verification password if you have one), and press Save again. These fields are cleared after each attempt and are never stored."
+            },
+            {
+                "type": "input",
+                "id": "telegramPhone",
+                "messageKey": "TELEGRAM_PHONE",
+                "label": "Phone Number",
+                "description": "Your Telegram account's phone number, in international format.",
+                "attributes": {
+                    "placeholder": "+15551234567",
+                    "type": "tel"
+                }
+            },
+            {
+                "type": "input",
+                "id": "telegramCode",
+                "messageKey": "TELEGRAM_CODE",
+                "label": "Login Code",
+                "description": "The code Telegram sent you after saving your phone number.",
+                "attributes": {
+                    "placeholder": "12345"
+                }
+            },
+            {
+                "type": "input",
+                "id": "telegramPassword",
+                "messageKey": "TELEGRAM_2FA_PASSWORD",
+                "label": "Two-Step Verification Password",
+                "description": "Only needed if your Telegram account has a cloud password (two-step verification).",
+                "attributes": {
+                    "type": "password"
+                }
             }
         ]
     },

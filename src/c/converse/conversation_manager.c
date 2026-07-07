@@ -60,6 +60,8 @@ ConversationManager* conversation_manager_create() {
   ConversationManager* manager = bmalloc(sizeof(ConversationManager));
   manager->conversation = conversation_create();
   manager->handler = NULL;
+  manager->deletion_handler = NULL;
+  manager->context = NULL;
   manager->app_message_handle = events_app_message_subscribe_handlers((EventAppMessageHandlers){
       .sent = prv_handle_app_message_outbox_sent,
       .failed = prv_handle_app_message_outbox_failed,

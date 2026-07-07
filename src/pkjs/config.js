@@ -72,5 +72,3 @@ exports.setBotUsername = function (username) {
 exports.isTelegramConnected = function () {
   return !!localStorage.getItem("telegram_session");
 };
-
-var o = 1;

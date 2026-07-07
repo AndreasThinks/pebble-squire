@@ -28,7 +28,128 @@ var config = require('./config');
 var package_json = require('package.json');
 
 
-var clay = new Clay(clayConfig, customConfigFunction);
+// Auth fields on the config page are handled by us, never persisted, and
+// never forwarded to the watch. Everything else follows Clay's normal path.
+var CONFIG_AUTH_KEYS = ['TELEGRAM_PHONE', 'TELEGRAM_CODE', 'TELEGRAM_2FA_PASSWORD'];
+
+// autoHandleEvents is off so we can intercept the sign-in fields before Clay
+// would persist and forward them.
+var clay = new Clay(clayConfig, customConfigFunction, { autoHandleEvents: false });
+
+Pebble.addEventListener('showConfiguration', function() {
+    Pebble.openURL(clay.generateUrl());
+});
+
+Pebble.addEventListener('webviewclosed', function(e) {
+    if (!e || !e.response) {
+        return;
+    }
+    var settings;
+    try {
+        settings = clay.getSettings(e.response, false);
+    } catch (err) {
+        console.error('[index] Failed to parse config response: ' + (err.message || err));
+        return;
+    }
+
+    function fieldValue(setting) {
+        var value = (setting && typeof setting === 'object') ? setting.value : setting;
+        return (typeof value === 'string') ? value.trim() : '';
+    }
+
+    var phone = fieldValue(settings.TELEGRAM_PHONE);
+    var code = fieldValue(settings.TELEGRAM_CODE);
+    var password = fieldValue(settings.TELEGRAM_2FA_PASSWORD);
+
+    // getSettings() has already persisted everything to clay-settings; scrub
+    // the sensitive fields back out so codes and passwords never stick around
+    // (and don't reappear pre-filled the next time the page opens).
+    for (var i = 0; i < CONFIG_AUTH_KEYS.length; i++) {
+        delete settings[CONFIG_AUTH_KEYS[i]];
+    }
+    try {
+        var stored = JSON.parse(localStorage.getItem('clay-settings')) || {};
+        for (var j = 0; j < CONFIG_AUTH_KEYS.length; j++) {
+            delete stored[CONFIG_AUTH_KEYS[j]];
+        }
+        localStorage.setItem('clay-settings', JSON.stringify(stored));
+    } catch (err) {
+        console.error('[index] Failed to scrub auth fields from clay-settings: ' + (err.message || err));
+    }
+
+    Pebble.sendAppMessage(Clay.prepareSettingsForAppMessage(settings), function() {
+        console.log('[index] Sent config data to watch');
+    }, function(error) {
+        console.error('[index] Failed to send config data: ' + JSON.stringify(error));
+    });
+
+    handleConfigAuth(phone, code, password);
+});
+
+// Drive the Telegram sign-in from fields entered on the config page. The flow
+// spans two visits: phone number first (Telegram then sends a code), then the
+// code — plus the cloud password for two-step verification accounts.
+function handleConfigAuth(phone, code, password) {
+    if (telegram.hasSession()) {
+        return;
+    }
+    if (code || password) {
+        ensureTelegramBundle();
+        var flow;
+        if (code) {
+            flow = telegram.provideCode(code).then(function(result) {
+                if (result.success) {
+                    return result;
+                }
+                if (result.status === 'password_needed') {
+                    if (password) {
+                        return telegram.providePassword(password);
+                    }
+                    Pebble.sendAppMessage({ TELEGRAM_PASSWORD_NEEDED: 1 });
+                    throw new Error('Two-step verification password required');
+                }
+                throw new Error('Sign-in failed');
+            });
+        } else {
+            flow = telegram.providePassword(password);
+        }
+        flow.then(function(result) {
+            if (result && result.success) {
+                console.log('[index] Config-page sign-in complete');
+                notifySignedIn();
+            }
+        }).catch(function(err) {
+            console.error('[index] Config-page sign-in failed: ' + (err.message || err));
+            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+        });
+    } else if (phone) {
+        ensureTelegramBundle();
+        telegram.startAuth(phone).then(function(result) {
+            if (result.success) {
+                console.log('[index] Config-page auth started, code sent');
+                Pebble.sendAppMessage({ TELEGRAM_CODE_SENT: 1 });
+            } else {
+                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            }
+        }).catch(function(err) {
+            console.error('[index] Config-page startAuth failed: ' + (err.message || err));
+            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+        });
+    }
+}
+
+// Tell the watch we're signed in and refresh everything that depends on the
+// session. resetClient() drops any client that was created before sign-in so
+// the next use connects with the newly saved session.
+function notifySignedIn() {
+    telegram.resetClient();
+    var username = telegram.getBotUsername();
+    Pebble.sendAppMessage({
+        TELEGRAM_CONNECTED: 1,
+        AGENT_TELEGRAM_USERNAME: username
+    });
+    history.fetchAndSendHistory();
+}
 
 function main() {
     location.update();
@@ -91,14 +212,11 @@ function handleAppMessage(e) {
         telegram.provideCode(code).then(function(result) {
             console.log('[index] provideCode result: ' + JSON.stringify(result));
             if (result.success) {
-                var username = telegram.getBotUsername();
-                Pebble.sendAppMessage({
-                    TELEGRAM_CONNECTED: 1,
-                    AGENT_TELEGRAM_USERNAME: username
-                });
-                history.fetchAndSendHistory();
+                notifySignedIn();
             } else if (result.status === 'password_needed') {
-                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+                // The account has a Telegram cloud password; the watch directs
+                // the user to the config page to finish signing in.
+                Pebble.sendAppMessage({ TELEGRAM_PASSWORD_NEEDED: 1 });
             } else {
                 Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
             }

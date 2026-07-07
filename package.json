@@ -24,6 +24,9 @@
       "location"
     ],
     "targetPlatforms": [
+      "basalt",
+      "chalk",
+      "diorite",
       "emery",
       "gabbro"
     ],
@@ -61,6 +64,7 @@
       "TELEGRAM_PROVIDE_CODE",
       "TELEGRAM_CODE_SENT",
       "TELEGRAM_AUTH_ERROR",
+      "TELEGRAM_PASSWORD_NEEDED",
       "TELEGRAM_DISCONNECT"
     ],
     "resources": {

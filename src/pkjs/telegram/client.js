@@ -181,7 +181,20 @@ function disconnect() {
     console.log('[client] disconnect called, client: ' + (client ? 'present' : 'null'));
     return new Promise(function(resolve, reject) {
         if (client) {
-            client.disconnect().then(function() {
+            // Best-effort server-side revocation: without auth.LogOut the
+            // session key stays valid on Telegram's side even though we've
+            // deleted our local copy of it.
+            var revoke = Promise.resolve();
+            if (client.connected && typeof TelegramApi !== 'undefined') {
+                revoke = client.invoke(new TelegramApi.auth.LogOut()).then(function() {
+                    console.log('[client] Session revoked server-side');
+                }).catch(function(err) {
+                    console.error('[client] auth.LogOut failed: ' + (err.errorMessage || err.message || err) + ' — continuing with local sign-out');
+                });
+            }
+            revoke.then(function() {
+                return client.disconnect();
+            }).then(function() {
                 console.log('[client] Disconnected successfully');
             }).catch(function(err) {
                 console.error('[client] Disconnect failed: ' + (err.message || err) + ' — clearing local state anyway');
