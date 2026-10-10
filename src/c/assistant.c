@@ -29,6 +29,7 @@
 #include "util/logging.h"
 #include "util/memory/pressure.h"
 #include "util/auth_flow.h"
+#include "util/tuple_util.h"
 
 
 #define QUICK_LAUNCH_TIMEOUT_MS 60000
@@ -37,24 +38,23 @@ static RootWindow* s_root_window = NULL;
 static EventHandle s_history_handle;
 
 static void prv_history_message_handler(DictionaryIterator *iter, void *context) {
-  bool saw_history_key = false;
-  for (Tuple *tuple = dict_read_first(iter); tuple; tuple = dict_read_next(iter)) {
+  // BEGIN first and DONE last, whatever order the tuples arrive in.
+  Tuple *tuple = dict_find(iter, MESSAGE_KEY_HISTORY_BEGIN);
+  if (tuple) {
+    history_begin();
+  }
+  for (tuple = dict_read_first(iter); tuple; tuple = dict_read_next(iter)) {
     if (tuple->key == MESSAGE_KEY_HISTORY_PROMPT) {
-      saw_history_key = true;
       history_add_prompt(tuple->value->cstring);
     } else if (tuple->key == MESSAGE_KEY_HISTORY_RESPONSE) {
-      saw_history_key = true;
       history_add_response(tuple->value->cstring);
     } else if (tuple->key == MESSAGE_KEY_HISTORY_THREAD_ID) {
-      saw_history_key = true;
       history_set_thread_id(tuple->value->cstring);
-    } else if (tuple->key == MESSAGE_KEY_HISTORY_DONE) {
-      saw_history_key = true;
-      history_set_done();
     }
   }
-  if (saw_history_key) {
-    history_set_loading(false);
+  tuple = dict_find(iter, MESSAGE_KEY_HISTORY_DONE);
+  if (tuple) {
+    history_set_done(tuple_get_int32(tuple));
   }
 }
 

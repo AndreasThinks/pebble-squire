@@ -14,13 +14,11 @@
  * limitations under the License.
  */
 
-var bundleLoader = require('./lib/bundle_loader');
-var ensureTelegramBundle = bundleLoader.ensureTelegramBundle;
-
 var location = require('./location');
 var session = require('./session');
 var telegram = require('./telegram');
 var history = require('./history');
+var messageQueue = require('./lib/message_queue').Queue;
 var Clay = require('@rebble/clay');
 var clayConfig = require('./config.json');
 var customConfigFunction = require('./custom_config');
@@ -28,13 +26,40 @@ var config = require('./config');
 var package_json = require('package.json');
 
 
-// Auth fields on the config page are handled by us, never persisted, and
-// never forwarded to the watch. Everything else follows Clay's normal path.
+// Sign-in fields on the config page. They are removed from the page's
+// response before Clay sees it, so they are never written to localStorage
+// (not even briefly) and never forwarded to the watch.
 var CONFIG_AUTH_KEYS = ['TELEGRAM_PHONE', 'TELEGRAM_CODE', 'TELEGRAM_2FA_PASSWORD'];
+
+var REASONS = telegram.AUTH_ERROR_REASONS;
 
 // autoHandleEvents is off so we can intercept the sign-in fields before Clay
 // would persist and forward them.
 var clay = new Clay(clayConfig, customConfigFunction, { autoHandleEvents: false });
+
+function send(message) {
+    messageQueue.enqueue(message);
+}
+
+// Describes an AppMessage payload for logs without its values: payloads
+// carry prompts, phone numbers and login codes.
+function describePayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return '(none)';
+    }
+    return Object.keys(payload).join(',') || '(empty)';
+}
+
+// Parses the config page response the same way Clay does.
+function parseConfigResponse(response) {
+    var text = /^\{/.test(response) ? response : decodeURIComponent(response);
+    return JSON.parse(text);
+}
+
+function fieldValue(setting) {
+    var value = (setting && typeof setting === 'object') ? setting.value : setting;
+    return (typeof value === 'string') ? value.trim() : '';
+}
 
 Pebble.addEventListener('showConfiguration', function() {
     Pebble.openURL(clay.generateUrl());
@@ -44,98 +69,110 @@ Pebble.addEventListener('webviewclosed', function(e) {
     if (!e || !e.response) {
         return;
     }
-    var settings;
+    var raw;
     try {
-        settings = clay.getSettings(e.response, false);
+        raw = parseConfigResponse(e.response);
     } catch (err) {
-        console.error('[index] Failed to parse config response: ' + (err.message || err));
+        console.error('[index] Failed to parse config response');
+        return;
+    }
+    if (!raw || typeof raw !== 'object') {
         return;
     }
 
-    function fieldValue(setting) {
-        var value = (setting && typeof setting === 'object') ? setting.value : setting;
-        return (typeof value === 'string') ? value.trim() : '';
-    }
-
-    var phone = fieldValue(settings.TELEGRAM_PHONE);
-    var code = fieldValue(settings.TELEGRAM_CODE);
-    var password = fieldValue(settings.TELEGRAM_2FA_PASSWORD);
-
-    // getSettings() has already persisted everything to clay-settings; scrub
-    // the sensitive fields back out so codes and passwords never stick around
-    // (and don't reappear pre-filled the next time the page opens).
+    var phone = fieldValue(raw.TELEGRAM_PHONE);
+    var code = fieldValue(raw.TELEGRAM_CODE);
+    var password = (raw.TELEGRAM_2FA_PASSWORD && typeof raw.TELEGRAM_2FA_PASSWORD === 'object')
+        ? raw.TELEGRAM_2FA_PASSWORD.value : raw.TELEGRAM_2FA_PASSWORD;
+    password = typeof password === 'string' ? password : '';
     for (var i = 0; i < CONFIG_AUTH_KEYS.length; i++) {
-        delete settings[CONFIG_AUTH_KEYS[i]];
-    }
-    try {
-        var stored = JSON.parse(localStorage.getItem('clay-settings')) || {};
-        for (var j = 0; j < CONFIG_AUTH_KEYS.length; j++) {
-            delete stored[CONFIG_AUTH_KEYS[j]];
-        }
-        localStorage.setItem('clay-settings', JSON.stringify(stored));
-    } catch (err) {
-        console.error('[index] Failed to scrub auth fields from clay-settings: ' + (err.message || err));
+        delete raw[CONFIG_AUTH_KEYS[i]];
     }
 
-    Pebble.sendAppMessage(Clay.prepareSettingsForAppMessage(settings), function() {
-        console.log('[index] Sent config data to watch');
-    }, function(error) {
-        console.error('[index] Failed to send config data: ' + JSON.stringify(error));
-    });
+    // Normalise the bot username before Clay stores it; an invalid one is
+    // stored as empty rather than guessed at.
+    if (raw.AGENT_TELEGRAM_USERNAME !== undefined) {
+        var normalized = telegram.normalizeBotUsername(fieldValue(raw.AGENT_TELEGRAM_USERNAME));
+        if (raw.AGENT_TELEGRAM_USERNAME && typeof raw.AGENT_TELEGRAM_USERNAME === 'object') {
+            raw.AGENT_TELEGRAM_USERNAME.value = normalized;
+        } else {
+            raw.AGENT_TELEGRAM_USERNAME = normalized;
+        }
+    }
+
+    var previousBot = telegram.getBotUsername();
+    var settings;
+    try {
+        // Clay persists exactly what it is given: the response without the
+        // sign-in fields.
+        settings = clay.getSettings(JSON.stringify(raw), false);
+    } catch (err) {
+        console.error('[index] Failed to apply config response');
+        return;
+    }
+
+    send(Clay.prepareSettingsForAppMessage(settings));
+
+    var newBot = telegram.getBotUsername();
+    if (newBot !== previousBot) {
+        console.log('[index] Agent bot changed');
+        session.resetMarkerMode();
+        session.cancelActiveSession();
+        history.fetchAndSendHistory();
+    }
 
     handleConfigAuth(phone, code, password);
 });
 
+function sendAuthError(err) {
+    var reason = (err && err.reason) || REASONS.GENERIC;
+    send({ TELEGRAM_AUTH_ERROR: reason });
+}
+
 // Drive the Telegram sign-in from fields entered on the config page. The flow
 // spans two visits: phone number first (Telegram then sends a code), then the
-// code — plus the cloud password for two-step verification accounts.
+// code - plus the cloud password for two-step verification accounts. The
+// pending sign-in survives PebbleKit JS restarts between visits.
 function handleConfigAuth(phone, code, password) {
-    if (telegram.hasSession()) {
+    if (!phone && !code && !password) {
         return;
     }
-    if (code || password) {
-        ensureTelegramBundle();
-        var flow;
-        if (code) {
-            flow = telegram.provideCode(code).then(function(result) {
-                if (result.success) {
-                    return result;
-                }
-                if (result.status === 'password_needed') {
-                    if (password) {
-                        return telegram.providePassword(password);
-                    }
-                    Pebble.sendAppMessage({ TELEGRAM_PASSWORD_NEEDED: 1 });
-                    throw new Error('Two-step verification password required');
-                }
-                throw new Error('Sign-in failed');
-            });
-        } else {
-            flow = telegram.providePassword(password);
-        }
-        flow.then(function(result) {
-            if (result && result.success) {
-                console.log('[index] Config-page sign-in complete');
-                notifySignedIn();
-            }
-        }).catch(function(err) {
-            console.error('[index] Config-page sign-in failed: ' + (err.message || err));
-            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
-        });
-    } else if (phone) {
-        ensureTelegramBundle();
-        telegram.startAuth(phone).then(function(result) {
+    if (telegram.hasSession()) {
+        console.log('[index] Already signed in; ignoring sign-in fields');
+        return;
+    }
+    var flow;
+    if (code) {
+        flow = telegram.provideCode(code).then(function(result) {
             if (result.success) {
-                console.log('[index] Config-page auth started, code sent');
-                Pebble.sendAppMessage({ TELEGRAM_CODE_SENT: 1 });
-            } else {
-                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+                return result;
             }
-        }).catch(function(err) {
-            console.error('[index] Config-page startAuth failed: ' + (err.message || err));
-            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            if (result.status === 'password_needed') {
+                if (password) {
+                    return telegram.providePassword(password);
+                }
+                send({ TELEGRAM_PASSWORD_NEEDED: 1 });
+                return null;
+            }
+            throw new Error('Sign-in failed');
+        });
+    } else if (password) {
+        flow = telegram.providePassword(password);
+    } else {
+        flow = telegram.startAuth(phone).then(function(result) {
+            send({ TELEGRAM_CODE_SENT: result.codeLength || 1 });
+            return null;
         });
     }
+    flow.then(function(result) {
+        if (result && result.success) {
+            console.log('[index] Config-page sign-in complete');
+            notifySignedIn();
+        }
+    }).catch(function(err) {
+        console.error('[index] Config-page sign-in failed (reason ' + ((err && err.reason) || REASONS.GENERIC) + ')');
+        sendAuthError(err);
+    });
 }
 
 // Tell the watch we're signed in and refresh everything that depends on the
@@ -143,15 +180,17 @@ function handleConfigAuth(phone, code, password) {
 // the next use connects with the newly saved session.
 function notifySignedIn() {
     telegram.resetClient();
+    var message = { TELEGRAM_CONNECTED: 1 };
     var username = telegram.getBotUsername();
-    Pebble.sendAppMessage({
-        TELEGRAM_CONNECTED: 1,
-        AGENT_TELEGRAM_USERNAME: username
-    });
+    if (username) {
+        message.AGENT_TELEGRAM_USERNAME = username;
+    }
+    send(message);
     history.fetchAndSendHistory();
 }
 
 function main() {
+    telegram.removeLegacyKeys();
     location.update();
     sendTelegramStatus();
     history.fetchAndSendHistory();
@@ -161,74 +200,70 @@ function main() {
 function sendTelegramStatus() {
     var isConnected = telegram.hasSession();
     console.log('Telegram connected: ' + isConnected);
-    Pebble.sendAppMessage({
+    send({
         TELEGRAM_CONNECTED: isConnected ? 1 : 0
     });
 }
 
 function handleTelegramDisconnect() {
     console.log('[index] Disconnecting from Telegram');
-    telegram.logout().then(function() {
-        console.log('[index] Disconnected successfully');
+    session.cancelActiveSession();
+    return telegram.logout().then(function(result) {
+        var revoked = !!(result && result.revoked);
+        console.log('[index] Signed out (' + (revoked ? 'revoked on server' : 'local only') + ')');
+        send({ TELEGRAM_LOGOUT_RESULT: revoked ? 1 : 2 });
         sendTelegramStatus();
     }).catch(function(err) {
-        console.error('[index] Failed to disconnect: ' + err.message);
+        console.error('[index] Sign-out failed: ' + (err && err.message));
+        // logout() clears local state even when revocation fails, so this
+        // only happens on unexpected errors; make sure we're signed out.
+        telegram.clearSession();
+        send({ TELEGRAM_LOGOUT_RESULT: 2 });
+        sendTelegramStatus();
     });
 }
 
 function handleAppMessage(e) {
-    console.log("Inbound app message!");
-    console.log(JSON.stringify(e));
-    var data = e.payload;
-    if (data.PROMPT) {
-        console.log("Starting a new Session...");
-        var s = new session.Session(data.PROMPT, data.THREAD_ID);
-        s.run();
+    var data = (e && e.payload) || {};
+    console.log('[index] App message from watch: ' + describePayload(data));
+    if (typeof data.PROMPT === 'string') {
+        var requestId = typeof data.REQUEST_ID === 'number' ? data.REQUEST_ID : null;
+        var threadId = typeof data.THREAD_ID === 'string' ? data.THREAD_ID : null;
+        session.startSession(data.PROMPT, threadId, requestId);
         return;
     }
 
     if ('TELEGRAM_START_AUTH' in data) {
-        ensureTelegramBundle();
         var phone = data.TELEGRAM_START_AUTH;
-        console.log('[index] Watch requested start_auth for: ' + phone);
-        telegram.startAuth(phone).then(function(result) {
-            console.log('[index] startAuth result: ' + JSON.stringify(result));
-            if (result.success) {
-                Pebble.sendAppMessage({ TELEGRAM_CODE_SENT: 1 });
-            } else {
-                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
-            }
+        telegram.startAuth(typeof phone === 'string' ? phone : '').then(function(result) {
+            send({ TELEGRAM_CODE_SENT: result.codeLength || 1 });
         }).catch(function(err) {
-            console.error('[index] startAuth failed: ' + err.message);
-            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            console.error('[index] startAuth failed (reason ' + ((err && err.reason) || REASONS.GENERIC) + ')');
+            sendAuthError(err);
         });
         return;
     }
 
     if ('TELEGRAM_PROVIDE_CODE' in data) {
-        ensureTelegramBundle();
         var code = data.TELEGRAM_PROVIDE_CODE;
-        console.log('[index] Watch provided code');
-        telegram.provideCode(code).then(function(result) {
-            console.log('[index] provideCode result: ' + JSON.stringify(result));
+        telegram.provideCode(typeof code === 'string' || typeof code === 'number' ? String(code) : '').then(function(result) {
             if (result.success) {
                 notifySignedIn();
             } else if (result.status === 'password_needed') {
                 // The account has a Telegram cloud password; the watch directs
                 // the user to the config page to finish signing in.
-                Pebble.sendAppMessage({ TELEGRAM_PASSWORD_NEEDED: 1 });
+                send({ TELEGRAM_PASSWORD_NEEDED: 1 });
             } else {
-                Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+                send({ TELEGRAM_AUTH_ERROR: REASONS.GENERIC });
             }
         }).catch(function(err) {
-            console.error('[index] provideCode failed: ' + err.message);
-            Pebble.sendAppMessage({ TELEGRAM_AUTH_ERROR: 1 });
+            console.error('[index] provideCode failed (reason ' + ((err && err.reason) || REASONS.GENERIC) + ')');
+            sendAuthError(err);
         });
         return;
     }
 
     if ('TELEGRAM_DISCONNECT' in data) {
-        ensureTelegramBundle();
         handleTelegramDisconnect();
         return;
     }
@@ -237,7 +272,7 @@ function handleAppMessage(e) {
         config.setSetting("LOCATION_ENABLED", !!data.LOCATION_ENABLED);
         console.log("Location enabled: " + config.isLocationEnabled());
         // We need to confirm that we received this for the watch to proceed.
-        Pebble.sendAppMessage({
+        send({
             LOCATION_ENABLED: data.LOCATION_ENABLED,
         });
     }
@@ -246,7 +281,7 @@ function handleAppMessage(e) {
 function doCobbleWarning() {
     if (window.cobble) {
         console.log("WARNING: Running Squire on Cobble is not supported, and has multiple known issues.");
-        Pebble.sendAppMessage({COBBLE_WARNING: 1});
+        send({COBBLE_WARNING: 1});
     }
 }
 
@@ -266,6 +301,7 @@ exports.updateTelegramStatus = function() {
     sendTelegramStatus();
 };
 
-// Export message handler for testing
+// Exported for testing
 exports.handleAppMessage = handleAppMessage;
 exports.handleTelegramDisconnect = handleTelegramDisconnect;
+exports.describePayload = describePayload;

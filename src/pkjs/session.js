@@ -14,55 +14,446 @@
  * limitations under the License.
  */
 
-var bundleLoader = require('./lib/bundle_loader');
 var location = require('./location');
 var config = require('./config');
 var messageQueue = require('./lib/message_queue').Queue;
 var telegram = require('./telegram');
 
-function Session(prompt, threadId) {
-    this.prompt = prompt;
-    this.threadId = threadId;
-    this.hasOpenDialog = false;
-    this.messageBuffer = '';
+/*
+ * One Session = one prompt sent to the agent bot and the reply streamed back
+ * to the watch. Protocol and completion policy (see also README "Agent
+ * integration notes"):
+ *
+ * - Only one session is active at a time; starting another cancels the
+ *   previous one, removing its Telegram handlers and dropping its queued,
+ *   undelivered watch messages.
+ * - Every message to the watch carries the REQUEST_ID the watch sent with the
+ *   prompt, so the watch ignores anything from an abandoned request.
+ * - Listeners are registered before the prompt is sent. Only messages in the
+ *   private chat with the configured bot account, sent after our prompt
+ *   (higher message id) and not explicitly replying to some other message,
+ *   count as the reply. Everything else - other chats, groups, earlier
+ *   messages - is ignored without being logged.
+ * - Consecutive bot messages are joined with a blank line. Edits to them
+ *   (agents that stream by editing) update the text: an edit that only
+ *   appends is sent as more CHAT; any other change resends the whole reply
+ *   after CHAT_RESET, so edits never show up as duplicate output.
+ * - The reply is complete when:
+ *     * a message (or edit) ends with "[done]" (stripped before display), or
+ *     * nothing (message, edit or typing indicator) has happened for
+ *       QUIET_COMPLETE_MS after at least one reply. Once a bot has been seen
+ *       using "[done]", it is trusted to keep doing so and the quiet window
+ *       becomes MARKER_MODE_QUIET_MS instead.
+ *   Before the first reply we wait up to FIRST_REPLY_TIMEOUT_MS of silence,
+ *   and never longer than HARD_TIMEOUT_MS overall; those end with a WARNING.
+ * - Edits arriving after completion can't be shown.
+ */
+
+var QUIET_COMPLETE_MS = 10000;
+var MARKER_MODE_QUIET_MS = 60000;
+var FIRST_REPLY_TIMEOUT_MS = 120000;
+var HARD_TIMEOUT_MS = 300000;
+var MAX_PROMPT_CHARS = 3000;
+var MAX_BUFFERED_EVENTS = 50;
+var MARKER_MODE_KEY = 'squire_agent_uses_done_marker';
+
+var END_MARKER_RE = /\s*\[done\]\s*$/i;
+var THREAD_ID_RE = /^[A-Za-z0-9_-]{1,36}$/;
+var MEDIA_PLACEHOLDER = '[Media message - open Telegram to view it]';
+
+var activeSession = null;
+var localGroupCounter = 0;
+
+function idString(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    return String(value);
 }
 
-Session.prototype.run = function() {
-    console.log("Starting Telegram session...");
+function idEquals(a, b) {
+    var sa = idString(a);
+    return sa !== null && sa === idString(b);
+}
 
+function idGreater(a, b) {
+    // Telegram message ids fit comfortably in a double.
+    return Number(a) > Number(b);
+}
+
+function Session(prompt, threadId, requestId) {
+    this.prompt = typeof prompt === 'string' ? prompt : '';
+    this.threadId = (typeof threadId === 'string' && THREAD_ID_RE.test(threadId)) ? threadId : null;
+    this.requestId = (typeof requestId === 'number' && requestId > 0) ? requestId : null;
+    this.group = this.requestId !== null ? 'request:' + this.requestId : 'local:' + (++localGroupCounter);
+    this.finished = false;
+    this.client = null;
+    this.botId = null;
+    this.botUsername = '';
+    this.sentId = null;
+    this.buffered = [];
+    this.segments = {};
+    this.segmentOrder = [];
+    this.shown = '';
+    this.typingSent = false;
+    this.handlers = [];
+    this.activityTimer = null;
+    this.hardTimer = null;
     var self = this;
+    this.done = new Promise(function(resolve) { self.resolveDone = resolve; });
+}
 
-    // Check if we have a Telegram session
+Session.prototype.emit = function(message, terminal) {
+    var self = this;
+    if (this.requestId !== null) {
+        message.REQUEST_ID = this.requestId;
+    }
+    messageQueue.enqueue(message, {
+        group: this.group,
+        terminal: !!terminal,
+        onFailed: function() { self.onDeliveryFailed(); }
+    });
+};
+
+Session.prototype.run = function() {
+    var self = this;
     if (!telegram.hasSession()) {
-        this.enqueue({
-            CHAT: 'Not connected to Telegram. Please configure your Telegram connection in the app settings.'
-        });
-        this.enqueue({
-            CHAT_DONE: true
-        });
-        return;
+        this.finish('Not signed in to Telegram. Sign in from the watch or from Squire\'s settings on your phone.');
+        return this.done;
+    }
+    if (!telegram.isAppConfigured()) {
+        this.finish('This build of Squire has no Telegram API credentials, so it can\'t talk to Telegram.');
+        return this.done;
+    }
+    this.botUsername = telegram.getBotUsername();
+    if (!this.botUsername) {
+        this.finish('No agent bot is set up. Enter your bot\'s username (e.g. @MyHermesBot) in Squire\'s settings on your phone.');
+        return this.done;
+    }
+    var trimmed = this.prompt.trim();
+    if (!trimmed) {
+        this.finish('Nothing to send.');
+        return this.done;
+    }
+    if (trimmed.length > MAX_PROMPT_CHARS) {
+        this.finish('That prompt is too long to send.');
+        return this.done;
     }
 
-    // Build the message with metadata
     var message = this.buildMessage();
-
-    // Send to agent via Telegram
-    this.sendToAgent(message).catch(function(error) {
-        console.error('Telegram session error:', error);
-        var errorMsg = error.message || 'Unknown error';
-        if (errorMsg.indexOf('re-authenticate') !== -1 || errorMsg.indexOf('session expired') !== -1) {
-            self.enqueue({
-                WARNING: 'Telegram session expired. Please re-authenticate in the app settings.'
-            });
-        } else {
-            self.enqueue({
-                CHAT: 'Error communicating with agent: ' + errorMsg
-            });
+    console.log('[session] Sending prompt (' + trimmed.length + ' chars) to agent');
+    telegram.initClient().then(function() {
+        if (self.finished) return null;
+        self.client = telegram.getClient();
+        if (!self.client) {
+            throw new Error('Telegram client not available. Please reconnect.');
         }
-        self.enqueue({
-            CHAT_DONE: true
-        });
+        return self.resolveBot();
+    }).then(function(entity) {
+        if (self.finished || !entity) return null;
+        // Listen before sending, so a fast reply can't slip past us.
+        self.startListening();
+        if (self.finished) return null;
+        return self.client.sendMessage(entity, { message: message });
+    }).then(function(sent) {
+        if (self.finished || !sent) return;
+        if (sent.id === undefined || sent.id === null) {
+            throw new Error('Telegram did not confirm the message was sent.');
+        }
+        self.sentId = sent.id;
+        console.log('[session] Prompt sent, waiting for reply');
+        self.hardTimer = setTimeout(function() { self.onHardTimeout(); }, HARD_TIMEOUT_MS);
+        self.armActivityTimer();
+        var buffered = self.buffered;
+        self.buffered = [];
+        for (var i = 0; i < buffered.length && !self.finished; i++) {
+            self.acceptBotMessage(buffered[i].message, buffered[i].isEdit);
+        }
+    }).catch(function(err) {
+        if (self.finished) return;
+        console.error('[session] Failed: ' + describeError(err));
+        self.finish(userFacingError(err, self.botUsername));
     });
+    return this.done;
+};
+
+Session.prototype.resolveBot = function() {
+    var self = this;
+    var username = this.botUsername.replace(/^@/, '');
+    return Promise.resolve(this.client.getEntity(username)).then(function(entity) {
+        if (self.finished) return null;
+        if (!entity || entity.className !== 'User' || entity.id === undefined || entity.id === null) {
+            self.finish(self.botUsername + ' isn\'t a Telegram bot account. Check the agent bot username in Squire\'s settings.');
+            return null;
+        }
+        if (entity.bot !== true) {
+            // Never send prompts (and location) to a person by mistake.
+            self.finish(self.botUsername + ' is a regular user, not a bot. Squire only talks to agent bots.');
+            return null;
+        }
+        self.botId = entity.id;
+        return entity;
+    }, function(err) {
+        if (self.finished) return null;
+        console.error('[session] Could not resolve agent bot: ' + describeError(err));
+        self.finish('Couldn\'t find ' + self.botUsername + ' on Telegram. Check the agent bot username in Squire\'s settings.');
+        return null;
+    });
+};
+
+Session.prototype.startListening = function() {
+    var self = this;
+    var builders = telegram.getEventBuilders();
+    if (!builders.NewMessage) {
+        this.finish('Telegram event support is not available.');
+        return;
+    }
+    function add(handler, builder) {
+        try {
+            self.client.addEventHandler(handler, builder);
+            self.handlers.push({ handler: handler, builder: builder });
+            return true;
+        } catch (err) {
+            console.error('[session] Failed to register event handler: ' + describeError(err));
+            return false;
+        }
+    }
+    var messageHandler = function(event) {
+        try {
+            self.onMessage(event && event.message, false);
+        } catch (err) {
+            console.error('[session] Error handling message: ' + describeError(err));
+        }
+    };
+    if (!add(messageHandler, new builders.NewMessage({ incoming: true }))) {
+        this.finish('Couldn\'t listen for the agent\'s reply.');
+        return;
+    }
+    if (builders.Raw) {
+        var rawHandler = function(update) {
+            try {
+                self.onRawUpdate(update);
+            } catch (err) {
+                console.error('[session] Error handling update: ' + describeError(err));
+            }
+        };
+        add(rawHandler, new builders.Raw({}));
+    }
+};
+
+Session.prototype.stopListening = function() {
+    var handlers = this.handlers;
+    this.handlers = [];
+    for (var i = 0; i < handlers.length; i++) {
+        try {
+            this.client.removeEventHandler(handlers[i].handler, handlers[i].builder);
+        } catch (err) {
+            console.log('[session] removeEventHandler failed: ' + describeError(err));
+        }
+    }
+};
+
+// True if msg is an incoming message in the private chat with our bot.
+Session.prototype.isFromBot = function(msg) {
+    if (!msg || msg.out || this.botId === null) {
+        return false;
+    }
+    var peer = msg.peerId;
+    if (!peer || peer.chatId !== undefined || peer.channelId !== undefined ||
+        (peer.className && peer.className !== 'PeerUser')) {
+        return false;
+    }
+    if (!idEquals(peer.userId, this.botId)) {
+        return false;
+    }
+    var sender = msg.fromId && msg.fromId.userId !== undefined ? msg.fromId.userId : msg.senderId;
+    if (sender !== undefined && sender !== null && !idEquals(sender, this.botId)) {
+        return false;
+    }
+    return true;
+};
+
+Session.prototype.onMessage = function(msg, isEdit) {
+    if (this.finished || !this.isFromBot(msg)) {
+        return;
+    }
+    if (this.sentId === null) {
+        // Our prompt isn't confirmed yet, so we can't tell old from new.
+        if (this.buffered.length < MAX_BUFFERED_EVENTS) {
+            this.buffered.push({ message: msg, isEdit: isEdit });
+        }
+        return;
+    }
+    this.acceptBotMessage(msg, isEdit);
+};
+
+Session.prototype.onRawUpdate = function(update) {
+    if (this.finished || !update) {
+        return;
+    }
+    var name = update.className;
+    if (name === 'UpdateUserTyping') {
+        if (idEquals(update.userId, this.botId) && this.sentId !== null) {
+            this.onTyping();
+        }
+    } else if (name === 'UpdateEditMessage') {
+        this.onMessage(update.message, true);
+    }
+};
+
+Session.prototype.onTyping = function() {
+    if (!this.shown && !this.typingSent) {
+        this.typingSent = true;
+        this.emit({ TYPING: 1 });
+    }
+    this.armActivityTimer();
+};
+
+Session.prototype.acceptBotMessage = function(msg, isEdit) {
+    var id = idString(msg.id);
+    if (id === null || !idGreater(msg.id, this.sentId)) {
+        // Sent before our prompt: not part of this reply.
+        return;
+    }
+    var replyTo = msg.replyTo && msg.replyTo.replyToMsgId;
+    if (replyTo !== undefined && replyTo !== null && !idEquals(replyTo, this.sentId) &&
+        !Object.prototype.hasOwnProperty.call(this.segments, idString(replyTo))) {
+        // Explicitly answering some other message (e.g. an earlier prompt).
+        return;
+    }
+    var known = Object.prototype.hasOwnProperty.call(this.segments, id);
+    if (known && !isEdit) {
+        return;  // duplicate delivery
+    }
+    var text = typeof msg.message === 'string' ? msg.message : '';
+    if (!text && msg.media) {
+        text = MEDIA_PLACEHOLDER;
+    }
+    var isFinal = END_MARKER_RE.test(text);
+    if (isFinal) {
+        text = text.replace(END_MARKER_RE, '');
+    }
+    if (!known) {
+        this.segmentOrder.push(id);
+        this.segmentOrder.sort(function(a, b) { return Number(a) - Number(b); });
+    }
+    this.segments[id] = text;
+    this.showTranscript();
+    if (isFinal) {
+        rememberMarkerMode(this.botUsername);
+        console.log('[session] End marker received, reply complete');
+        this.finish(null);
+        return;
+    }
+    this.armActivityTimer();
+};
+
+Session.prototype.transcript = function() {
+    var parts = [];
+    for (var i = 0; i < this.segmentOrder.length; i++) {
+        var text = this.segments[this.segmentOrder[i]];
+        if (text) {
+            parts.push(text);
+        }
+    }
+    return parts.join('\n\n');
+};
+
+Session.prototype.showTranscript = function() {
+    var full = this.transcript();
+    if (full === this.shown) {
+        return;
+    }
+    if (full.indexOf(this.shown) === 0) {
+        this.emit({ CHAT: full.substring(this.shown.length) });
+    } else {
+        // Something already on the watch changed: replace the whole reply.
+        this.emit({ CHAT_RESET: 1 });
+        if (full) {
+            this.emit({ CHAT: full });
+        }
+    }
+    this.shown = full;
+};
+
+Session.prototype.armActivityTimer = function() {
+    var self = this;
+    if (this.finished) {
+        return;
+    }
+    clearTimeout(this.activityTimer);
+    var hasReply = this.segmentOrder.length > 0;
+    var delay = !hasReply ? FIRST_REPLY_TIMEOUT_MS
+        : (usesMarkerMode(this.botUsername) ? MARKER_MODE_QUIET_MS : QUIET_COMPLETE_MS);
+    this.activityTimer = setTimeout(function() {
+        self.activityTimer = null;
+        if (self.segmentOrder.length > 0) {
+            console.log('[session] Reply quiet for ' + (delay / 1000) + 's, treating as complete');
+            self.finish(null);
+        } else {
+            self.finish('No reply from ' + self.botUsername + ' yet. It may still answer in Telegram.');
+        }
+    }, delay);
+};
+
+Session.prototype.onHardTimeout = function() {
+    this.hardTimer = null;
+    if (this.segmentOrder.length > 0) {
+        this.finish('Stopped waiting for the rest of the reply after ' + (HARD_TIMEOUT_MS / 60000) + ' minutes.');
+    } else {
+        this.finish('No reply from ' + this.botUsername + ' after ' + (HARD_TIMEOUT_MS / 60000) + ' minutes.');
+    }
+};
+
+Session.prototype.cleanup = function() {
+    this.finished = true;
+    clearTimeout(this.activityTimer);
+    clearTimeout(this.hardTimer);
+    this.activityTimer = null;
+    this.hardTimer = null;
+    this.buffered = [];
+    if (this.client) {
+        this.stopListening();
+    }
+    if (activeSession === this) {
+        activeSession = null;
+    }
+};
+
+// Ends the session, telling the watch: an optional WARNING, then CHAT_DONE.
+Session.prototype.finish = function(warning) {
+    if (this.finished) {
+        return;
+    }
+    this.cleanup();
+    if (warning) {
+        this.emit({ WARNING: warning });
+    }
+    this.emit({ CHAT_DONE: 1 });
+    this.resolveDone({ complete: !warning });
+};
+
+// Abandons the session without telling the watch (it has moved on).
+Session.prototype.cancel = function() {
+    if (this.finished) {
+        return;
+    }
+    console.log('[session] Cancelling superseded request');
+    this.cleanup();
+    messageQueue.purgeGroup(this.group);
+    this.resolveDone({ complete: false, cancelled: true });
+};
+
+// Part of the reply couldn't be delivered to the watch: stop, and say so
+// rather than leaving a silently incomplete reply.
+Session.prototype.onDeliveryFailed = function() {
+    var wasFinished = this.finished;
+    this.cleanup();
+    this.emit({ WARNING: 'Part of the reply couldn\'t be delivered to the watch. Check the Bluetooth connection and try again.' }, true);
+    this.emit({ CHAT_DONE: 1 }, true);
+    if (!wasFinished) {
+        this.resolveDone({ complete: false, deliveryFailed: true });
+    }
 };
 
 Session.prototype.buildMessage = function() {
@@ -82,253 +473,78 @@ Session.prototype.buildMessage = function() {
     return formattedMessage;
 };
 
-Session.prototype.sendToAgent = function(message) {
-    var self = this;
-    var botUsername = telegram.getBotUsername();
-
-    return new Promise(function(resolve, reject) {
-        bundleLoader.ensureTelegramBundle();
-
-        if (typeof TelegramClient !== 'undefined' && typeof StringSession !== 'undefined') {
-            self.sendViaGramJS(message, botUsername, resolve, reject);
-        } else {
-            reject(new Error('Telegram client not available. Please reconnect.'));
-        }
-    });
-};
-
-Session.prototype.sendViaGramJS = function(message, botUsername, resolve, reject) {
-    var self = this;
-    var cleanUsername = botUsername.replace(/^@/, '');
-
-    telegram.initClient().then(function() {
-        var tgClient = telegram.getClient();
-        return tgClient.sendMessage(cleanUsername, { message: message });
-    }).then(function(result) {
-        console.log('[session] Message sent to', botUsername, 'id:', result ? result.id : 'unknown');
-        self.listenForResponse(telegram.getClient(), cleanUsername, resolve, reject);
-    }).catch(function(error) {
-        console.error('[session] GramJS error:', error);
-        reject(error);
-    });
-};
-
-Session.prototype.listenForResponse = function(client, botUsername, resolve, reject) {
-    var self = this;
-    var timeout = 120000;
-    var resolved = false;
-    var processedIds = {};
-    var botUserId = null;
-
-    // Keep references to the handlers and event builders we register so we
-    // can remove them when this conversation ends. GramJS's removeEventHandler
-    // matches by reference equality on both the callback and the builder, so
-    // these must be the exact instances passed to addEventHandler. Without
-    // removal, every new Session would pile another handler onto the shared
-    // client, and after N conversations each incoming message would be
-    // processed N times.
-    var messageHandler = null;
-    var messageBuilder = null;
-    var typingHandler = null;
-    var typingBuilder = null;
-
-    function cleanup() {
-        try {
-            if (messageHandler && messageBuilder) {
-                client.removeEventHandler(messageHandler, messageBuilder);
-            }
-        } catch (err) {
-            console.log('[session] removeEventHandler (message) failed:', err.message || err);
-        }
-        try {
-            if (typingHandler && typingBuilder) {
-                client.removeEventHandler(typingHandler, typingBuilder);
-            }
-        } catch (err) {
-            console.log('[session] removeEventHandler (typing) failed:', err.message || err);
-        }
-    }
-
-    function finish(settle, value) {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timeoutId);
-        clearTimeout(idleTimeoutId);
-        cleanup();
-        settle(value);
-    }
-
-    function done(result) { finish(resolve, result); }
-    function fail(err) { finish(reject, err); }
-
-    var timeoutId = setTimeout(function() {
-        fail(new Error('Timeout waiting for response from agent'));
-    }, timeout);
-
-    // Idle timeout: 60 seconds after the last activity (message or typing),
-    // but only after we've received at least one response. Before the first
-    // response we keep waiting so slow agents don't get cut off.
-    var IDLE_TIMEOUT = 60000;
-    var idleTimeoutId = setTimeout(function() {
-        if (!self.hasOpenDialog) {
-            console.log('[session] Idle timeout fired before first response, still waiting');
-            resetIdleTimeout();
-            return;
-        }
-        console.log('[session] Idle timeout (60s since last activity)');
-        self.hasOpenDialog = false;
-        self.enqueue({ CHAT_DONE: true });
-        done({ complete: true });
-    }, IDLE_TIMEOUT);
-
-    function resetIdleTimeout() {
-        clearTimeout(idleTimeoutId);
-        idleTimeoutId = setTimeout(function() {
-            if (!self.hasOpenDialog) {
-                console.log('[session] Idle timeout fired before first response, still waiting');
-                resetIdleTimeout();
-                return;
-            }
-            console.log('[session] Idle timeout (60s since last activity)');
-            self.hasOpenDialog = false;
-            self.enqueue({ CHAT_DONE: true });
-            done({ complete: true });
-        }, IDLE_TIMEOUT);
-    }
-
-    console.log('[session] listenForResponse registering handler, NewMessage available: ' + (typeof NewMessage !== 'undefined'));
-
-    if (typeof NewMessage !== 'undefined') {
-        try {
-            messageBuilder = new NewMessage({ incoming: true });
-            messageHandler = function(event) {
-                try {
-                    if (resolved) return;
-                    var msg = event.message;
-                    if (!msg || !msg.message) return;
-                    if (processedIds[msg.id]) return;
-                    processedIds[msg.id] = true;
-                    console.log('[session] raw message out=', msg.out, 'id=', msg.id, 'text=', formatLoggedMessage(msg.message));
-                    resetIdleTimeout();
-                    self.handleIncomingMessage(msg.message, done);
-                } catch (err) {
-                    console.error('[session] Error handling message:', err);
-                }
-            };
-            client.addEventHandler(messageHandler, messageBuilder);
-            console.log('[session] Event handler registered successfully (incoming only)');
-        } catch (err) {
-            console.error('[session] Failed to register event handler:', err);
-            fail(new Error('Failed to register Telegram event handler'));
-        }
-    } else {
-        console.error('[session] NewMessage is undefined, cannot register event handler');
-        fail(new Error('Telegram event support not available'));
-    }
-
-    // Listen for typing indicators from the bot
-    if (typeof Raw !== 'undefined') {
-        try {
-            typingBuilder = new Raw({});
-            typingHandler = function(update) {
-                try {
-                    if (resolved) return;
-                    if (!update || !update.userId) return;
-                    // Only process typing from the bot
-                    if (botUserId && update.userId.equals(botUserId)) {
-                        console.log('[session] Bot is typing');
-                        resetIdleTimeout();
-                        self.enqueue({ TYPING: 1 });
-                    }
-                } catch (err) {
-                    // Ignore errors from unrelated updates
-                }
-            };
-            client.addEventHandler(typingHandler, typingBuilder);
-            console.log('[session] Typing indicator handler registered');
-        } catch (err) {
-            console.log('[session] Could not register typing handler:', err.message || err);
-        }
-    }
-
-    // Resolve the bot's user ID so we can match typing events
-    if (typeof TelegramApi !== 'undefined') {
-        try {
-            client.getEntity(botUsername).then(function(entity) {
-                if (entity && entity.id) {
-                    botUserId = entity.id;
-                    console.log('[session] Bot user ID resolved:', botUserId.toString());
-                }
-            }).catch(function(err) {
-                console.log('[session] Could not resolve bot user ID for typing detection:', err.message || err);
-            });
-        } catch (err) {
-            console.log('[session] Could not resolve bot entity:', err.message || err);
-        }
-    }
-};
-
-function formatLoggedMessage(message) {
-    if (!message) return '';
-    var withoutSystem = message.replace(/<system>[\s\S]*?<\/system>/g, '').trim();
-    if (withoutSystem.length <= 100) return withoutSystem;
-    return withoutSystem.substring(0, 50) + '...' + withoutSystem.substring(withoutSystem.length - 50);
+function rememberMarkerMode(botUsername) {
+    try {
+        localStorage.setItem(MARKER_MODE_KEY, botUsername.toLowerCase());
+    } catch (e) {}
 }
 
-// Agents that pause for more than the idle window mid-reply cause premature
-// "done" states, so they can instead end their final message with an explicit
-// [done] marker to close the conversation immediately. The marker is stripped
-// before display; the idle timer below remains the fallback for agents that
-// don't use it.
-var END_MARKER_RE = /\s*\[done\]\s*$/i;
-
-Session.prototype.handleIncomingMessage = function(message, resolve) {
-    console.log('Received message:', formatLoggedMessage(message));
-
-    var isFinal = END_MARKER_RE.test(message);
-    if (isFinal) {
-        message = message.replace(END_MARKER_RE, '');
+function usesMarkerMode(botUsername) {
+    try {
+        return !!botUsername && localStorage.getItem(MARKER_MODE_KEY) === botUsername.toLowerCase();
+    } catch (e) {
+        return false;
     }
+}
 
-    this.hasOpenDialog = true;
-    if (message.length > 0 || !isFinal) {
-        this.enqueue({
-            CHAT: message
-        });
+function resetMarkerMode() {
+    try {
+        localStorage.removeItem(MARKER_MODE_KEY);
+    } catch (e) {}
+}
+
+// Telegram errors are codes like USERNAME_NOT_OCCUPIED; never user content.
+function describeError(err) {
+    return String((err && (err.errorMessage || err.code || err.message)) || err);
+}
+
+function userFacingError(err, botUsername) {
+    var text = describeError(err);
+    if (err && err.code === 'APP_NOT_CONFIGURED') {
+        return 'This build of Squire has no Telegram API credentials, so it can\'t talk to Telegram.';
     }
-
-    var self = this;
-    if (this._doneTimer) {
-        clearTimeout(this._doneTimer);
-        this._doneTimer = null;
+    if (/re-authenticate|session expired|No Telegram session/i.test(text)) {
+        return 'Telegram session expired. Sign in again from the watch or Squire\'s settings.';
     }
-
-    if (isFinal) {
-        console.log('[session] End marker received, completing conversation');
-        this.hasOpenDialog = false;
-        this.enqueue({
-            CHAT_DONE: true
-        });
-        resolve({ complete: true });
-        return;
+    if (/USERNAME_(NOT_OCCUPIED|INVALID)|Cannot find any entity|No user has/i.test(text)) {
+        return 'Couldn\'t find ' + botUsername + ' on Telegram. Check the agent bot username in Squire\'s settings.';
     }
+    if (/YOU_BLOCKED_USER|USER_IS_BLOCKED|PEER_ID_INVALID/.test(text)) {
+        return 'Telegram won\'t deliver messages to ' + botUsername + '. Unblock it or start a chat with it in Telegram first.';
+    }
+    if (/timed out|timeout|Not connected|network/i.test(text)) {
+        return 'Couldn\'t reach Telegram. Check your phone\'s connection.';
+    }
+    return 'Error communicating with agent: ' + text;
+}
 
-    this._doneTimer = setTimeout(function() {
-        self.hasOpenDialog = false;
-        self.enqueue({
-            CHAT_DONE: true
-        });
-        self._doneTimer = null;
-        resolve({ complete: true });
-    }, 2000);
-};
+/**
+ * Starts a session for a prompt from the watch, cancelling any session still
+ * in progress (one request at a time).
+ */
+function startSession(prompt, threadId, requestId) {
+    if (activeSession) {
+        activeSession.cancel();
+    }
+    var session = new Session(prompt, threadId, requestId);
+    activeSession = session;
+    session.run();
+    return session;
+}
 
-Session.prototype.enqueue = function(message) {
-    messageQueue.enqueue(message);
-};
-
-Session.prototype.dequeue = function() {
-    messageQueue.dequeue();
-};
+function cancelActiveSession() {
+    if (activeSession) {
+        activeSession.cancel();
+    }
+}
 
 exports.Session = Session;
+exports.startSession = startSession;
+exports.cancelActiveSession = cancelActiveSession;
+exports.getActiveSession = function() { return activeSession; };
+exports.resetMarkerMode = resetMarkerMode;
+exports.END_MARKER_RE = END_MARKER_RE;
+exports.QUIET_COMPLETE_MS = QUIET_COMPLETE_MS;
+exports.MARKER_MODE_QUIET_MS = MARKER_MODE_QUIET_MS;
+exports.FIRST_REPLY_TIMEOUT_MS = FIRST_REPLY_TIMEOUT_MS;
+exports.HARD_TIMEOUT_MS = HARD_TIMEOUT_MS;

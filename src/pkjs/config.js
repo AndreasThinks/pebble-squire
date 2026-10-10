@@ -38,37 +38,5 @@ exports.isLocationEnabled = function () {
   return !!exports.getSettings()["LOCATION_ENABLED"];
 };
 
-/**
- * Get the agent username.
- * @returns {string}
- */
-exports.getBotUsername = function () {
-  var username = localStorage.getItem("agent_telegram_username");
-  if (!username) {
-    var settings = exports.getSettings();
-    username = settings["AGENT_TELEGRAM_USERNAME"] || "@MyAgentBot";
-  }
-  if (username && !username.startsWith("@")) {
-    username = "@" + username;
-  }
-  return username || "@MyAgentBot";
-};
-
-/**
- * Set the agent username.
- * @param {string} username
- */
-exports.setBotUsername = function (username) {
-  if (username && !username.startsWith("@")) {
-    username = "@" + username;
-  }
-  localStorage.setItem("agent_telegram_username", username);
-};
-
-/**
- * Check if Telegram is connected.
- * @returns {boolean}
- */
-exports.isTelegramConnected = function () {
-  return !!localStorage.getItem("telegram_session");
-};
+// The agent bot username and Telegram session live in src/pkjs/telegram/
+// session.js; there is intentionally no default bot.

@@ -1,5 +1,4 @@
 import { vi } from 'vitest';
-import 'dotenv/config';
 import nodeCrypto from 'crypto';
 
 const webcrypto = {

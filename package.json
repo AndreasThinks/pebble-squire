@@ -65,7 +65,11 @@
       "TELEGRAM_CODE_SENT",
       "TELEGRAM_AUTH_ERROR",
       "TELEGRAM_PASSWORD_NEEDED",
-      "TELEGRAM_DISCONNECT"
+      "TELEGRAM_DISCONNECT",
+      "REQUEST_ID",
+      "CHAT_RESET",
+      "HISTORY_BEGIN",
+      "TELEGRAM_LOGOUT_RESULT"
     ],
     "resources": {
       "media": [

@@ -173,10 +173,30 @@ static void prv_click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_DOWN, prv_more_clicked);
 }
 
+// How long a long-press waits for the phone to finish sending history before
+// opening a conversation without it.
+#define HISTORY_WAIT_TIMEOUT_MS 15000
+
 static Window *s_loading_window = NULL;
 static ThinkingLayer *s_loading_thinking_layer = NULL;
+static AppTimer *s_loading_timer = NULL;
+static bool s_waiting_for_history = false;
+
+static void prv_stop_waiting_for_history(void) {
+  if (s_waiting_for_history) {
+    s_waiting_for_history = false;
+    history_set_done_callback(NULL);
+  }
+  if (s_loading_timer) {
+    app_timer_cancel(s_loading_timer);
+    s_loading_timer = NULL;
+  }
+}
 
 static void prv_loading_window_unload(Window *window) {
+  // Backing out of the loading screen abandons the wait: don't open a
+  // conversation later when history eventually arrives.
+  prv_stop_waiting_for_history();
   if (s_loading_thinking_layer) {
     thinking_layer_destroy(s_loading_thinking_layer);
     s_loading_thinking_layer = NULL;
@@ -185,17 +205,38 @@ static void prv_loading_window_unload(Window *window) {
   s_loading_window = NULL;
 }
 
-static void prv_history_loaded_callback(void) {
+static void prv_open_conversation_after_wait(void) {
+  prv_stop_waiting_for_history();
   if (s_loading_window) {
     window_stack_remove(s_loading_window, true);
     // Unload handler will destroy resources
   }
-  session_window_push_with_history(0, NULL, history_get_thread_id());
+  if (history_is_available()) {
+    session_window_push_with_history(0, NULL, history_get_thread_id());
+  } else {
+    session_window_push(0, NULL);
+  }
+}
+
+static void prv_history_loaded_callback(void) {
+  // history_set_done has already consumed the callback.
+  s_waiting_for_history = false;
+  prv_open_conversation_after_wait();
+}
+
+static void prv_history_wait_timed_out(void *context) {
+  s_loading_timer = NULL;
+  SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Timed out waiting for history; opening a new conversation.");
+  prv_open_conversation_after_wait();
 }
 
 static void prv_push_loading_window(void) {
   if (s_loading_window) return;
   Window *window = bwindow_create();
+  if (!window) {
+    prv_open_conversation_after_wait();
+    return;
+  }
   s_loading_window = window;
   window_set_window_handlers(window, (WindowHandlers) {
     .unload = prv_loading_window_unload,
@@ -208,7 +249,9 @@ static void prv_push_loading_window(void) {
     (bounds.size.h - THINKING_LAYER_HEIGHT) / 2,
     THINKING_LAYER_WIDTH,
     THINKING_LAYER_HEIGHT));
-  layer_add_child(root_layer, s_loading_thinking_layer);
+  if (s_loading_thinking_layer) {
+    layer_add_child(root_layer, s_loading_thinking_layer);
+  }
   window_stack_push(window, true);
 }
 
@@ -220,8 +263,15 @@ static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context
   if (history_is_available()) {
     session_window_push_with_history(0, NULL, history_get_thread_id());
   } else if (history_is_loading()) {
-    // Wait for history to load before deciding whether to show history or start fresh
+    // Wait (boundedly) for history to finish loading before deciding whether
+    // to show history or start fresh, so a half-delivered history is never
+    // mistaken for "no history".
+    s_waiting_for_history = true;
     history_set_done_callback(prv_history_loaded_callback);
+    if (s_loading_timer) {
+      app_timer_cancel(s_loading_timer);
+    }
+    s_loading_timer = app_timer_register(HISTORY_WAIT_TIMEOUT_MS, prv_history_wait_timed_out, NULL);
     prv_push_loading_window();
   } else {
     session_window_push(0, NULL);

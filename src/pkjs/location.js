@@ -24,17 +24,17 @@ exports.update = function() {
     if (oldLon && oldLat) {
         cachedLon = parseFloat(oldLon);
         cachedLat = parseFloat(oldLat);
-        console.log("Cached location restored: (" + cachedLat + ", " + cachedLon + ")");
+        console.log("Cached location restored");
     }
     
     navigator.geolocation.getCurrentPosition(function(pos) {
         cachedLat = pos.coords.latitude;
         cachedLon = pos.coords.longitude;
-        console.log("position updated: (" + cachedLat + ", " + cachedLon + ")");
+        console.log("Position updated");
         localStorage.setItem('oldLon', cachedLon);
         localStorage.setItem('oldLat', cachedLat);
     }, function (err) {
-        console.log("Failed to update location: " + err);
+        console.log("Failed to update location: " + (err && err.code));
     }, {
         enableHighAccuracy: true,
         maximumAge: 300000,

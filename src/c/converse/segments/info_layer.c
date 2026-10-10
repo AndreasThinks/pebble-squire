@@ -43,6 +43,9 @@ static GColor prv_get_stripe_color(ConversationEntry* entry);
 
 InfoLayer* info_layer_create(GRect rect, ConversationEntry* entry) {
     Layer* layer = blayer_create_with_data(rect, sizeof(InfoLayerData));
+    if (!layer) {
+      return NULL;
+    }
     InfoLayerData* data = layer_get_data(layer);
     data->entry = entry;
     data->icon = NULL;
@@ -51,9 +54,19 @@ InfoLayer* info_layer_create(GRect rect, ConversationEntry* entry) {
   data->content_height = prv_get_content_height(layer);
 #ifdef PBL_PLATFORM_GABBRO
   data->content_layer = btext_layer_create(GRect(0, 1, rect.size.w, data->content_height));
-  text_layer_set_text_alignment(data->content_layer, GTextAlignmentCenter);
 #else
   data->content_layer = btext_layer_create(GRect(STRIPE_WIDTH + TEXT_PADDING_LEFT, 1, rect.size.w - UNAVAILABLE_WIDTH, data->content_height));
+#endif
+  if (!data->content_layer) {
+    if (data->content_text) {
+      free(data->content_text);
+    }
+    layer_destroy(layer);
+    return NULL;
+  }
+#ifdef PBL_PLATFORM_GABBRO
+  text_layer_set_text_alignment(data->content_layer, GTextAlignmentCenter);
+#else
   text_layer_set_text_alignment(data->content_layer, GTextAlignmentLeft);
 #endif
   text_layer_set_text(data->content_layer, prv_get_content_text(layer));
@@ -116,7 +129,7 @@ static char *prv_get_content_text(InfoLayer *layer) {
       if (!data->content_text) {
         data->content_text = prv_generate_action_text(conversation_entry_get_action(entry));
       }
-      return data->content_text;
+      return data->content_text ? data->content_text : "";
     default:
       return "(Bobby bug)";
   }
@@ -152,16 +165,18 @@ static void prv_layer_render(Layer* layer, GContext* ctx) {
 }
 
 static char* prv_generate_action_text(ConversationAction* action) {
-  char* buffer = bmalloc(50);
+  const char* text = "";
   switch (action->type) {
     case ConversationActionTypeUpdateChecklist:
-      strncpy(buffer, "Checklist updated.", 50);
+      text = "Checklist updated.";
       break;
     case ConversationActionTypeGenericSentence:
-      free(buffer);
-      buffer = bmalloc(strlen(action->action.generic_sentence.sentence) + 1);
-      strcpy(buffer, action->action.generic_sentence.sentence);
+      text = action->action.generic_sentence.sentence;
       break;
+  }
+  char* buffer = bmalloc(strlen(text) + 1);
+  if (buffer) {
+    strcpy(buffer, text);
   }
   return buffer;
 }

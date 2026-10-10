@@ -20,6 +20,9 @@ function ensureTelegramBundle() {
             if (bundled && bundled.TelegramClient && bundled.TelegramClient.events && bundled.TelegramClient.events.Raw) {
                 (typeof window !== 'undefined' ? window : global).Raw = bundled.TelegramClient.events.Raw;
             }
+            if (bundled && bundled.TelegramClient && bundled.TelegramClient.events && bundled.TelegramClient.events.EditedMessage) {
+                (typeof window !== 'undefined' ? window : global).EditedMessage = bundled.TelegramClient.events.EditedMessage;
+            }
             loaded = true;
             console.log('[bundle] Telegram bundle loaded successfully');
             console.log('[bundle] TelegramClient available: ' + (typeof TelegramClient !== 'undefined'));

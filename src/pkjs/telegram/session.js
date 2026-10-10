@@ -15,109 +15,105 @@
  */
 
 /**
- * Session storage for Telegram authentication.
- * Stores the Telegram session in localStorage, optionally encrypted.
+ * Storage for the Telegram session and the agent bot username.
+ *
+ * The session string is a bearer credential: it contains the MTProto auth
+ * key, and anyone who obtains it can act as the user's Telegram account
+ * until the session is revoked (Telegram > Settings > Devices). PebbleKit JS
+ * offers no OS keystore, so it lives in the app's localStorage, which the
+ * phone app keeps in its private storage. Encrypting it with a key shipped in
+ * this same JavaScript would add no protection, so we don't pretend to.
+ * Instead: only this module touches it, it is never logged, never sent to
+ * the watch or the config page, and it is deleted on sign-out.
  */
 
 var SESSION_KEY = 'telegram_session';
-var BOT_USERNAME_KEY = 'agent_telegram_username';
+// Older versions cached the bot username here, where it silently overrode
+// later changes made on the settings page. Only clay-settings is used now.
+var LEGACY_BOT_USERNAME_KEY = 'agent_telegram_username';
 
-/**
- * Save Telegram session to localStorage.
- * @param {string} sessionData - The session string from GramJS
- */
+// Telegram usernames: 5-32 characters, letters, digits and underscores,
+// starting with a letter.
+var USERNAME_RE = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
+
 function saveSession(sessionData) {
     try {
-        // For security, we could encrypt this, but for simplicity we store it directly
-        // In a production app, consider using the Web Crypto API for encryption
         localStorage.setItem(SESSION_KEY, sessionData);
-        console.log('Telegram session saved');
+        console.log('[session] Telegram session saved');
+        return true;
     } catch (err) {
-        console.error('Failed to save session:', err);
+        console.error('[session] Failed to save session: ' + (err && err.message));
+        return false;
     }
 }
 
-/**
- * Load Telegram session from localStorage.
- * @returns {string|null} The session string or null if not found
- */
 function loadSession() {
     try {
-        var sessionData = localStorage.getItem(SESSION_KEY);
-        if (sessionData) {
-            console.log('Telegram session loaded');
-            return sessionData;
-        }
+        return localStorage.getItem(SESSION_KEY) || null;
     } catch (err) {
-        console.error('Failed to load session:', err);
+        console.error('[session] Failed to load session: ' + (err && err.message));
+        return null;
     }
-    return null;
 }
 
-/**
- * Clear the Telegram session from localStorage.
- */
 function clearSession() {
     try {
         localStorage.removeItem(SESSION_KEY);
-        console.log('Telegram session cleared');
+        console.log('[session] Telegram session cleared');
     } catch (err) {
-        console.error('Failed to clear session:', err);
+        console.error('[session] Failed to clear session: ' + (err && err.message));
     }
 }
 
-/**
- * Check if a session exists.
- * @returns {boolean}
- */
 function hasSession() {
-    return localStorage.getItem(SESSION_KEY) !== null;
+    return !!loadSession();
 }
 
-/**
- * Save the agent username.
- * @param {string} username - Bot username (e.g., "@MyAgentBot")
- */
-function saveBotUsername(username) {
+// Returns the canonical "@username" form, or '' if value isn't a valid
+// Telegram username.
+function normalizeBotUsername(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+    var name = value.trim().replace(/^@/, '');
+    return USERNAME_RE.test(name) ? '@' + name : '';
+}
+
+function readClaySettings() {
     try {
-        // Normalize username
-        if (username && !username.startsWith('@')) {
-            username = '@' + username;
-        }
-        localStorage.setItem(BOT_USERNAME_KEY, username);
-        console.log('Bot username saved:', username);
-    } catch (err) {
-        console.error('Failed to save bot username:', err);
+        return JSON.parse(localStorage.getItem('clay-settings')) || {};
+    } catch (e) {
+        console.error('[session] Failed to parse clay-settings');
+        return {};
     }
 }
 
 /**
- * Get the agent username.
- * @returns {string} The bot username or default
+ * The configured agent bot, as "@username", or '' if none is configured (or
+ * the configured value isn't a valid username). There is deliberately no
+ * default: sending prompts and location to a guessed account would leak them.
  */
 function getBotUsername() {
-    var username = localStorage.getItem(BOT_USERNAME_KEY);
-    if (!username) {
-        // Get from clay-settings as fallback
-        var settings = {};
-        try {
-            settings = JSON.parse(localStorage.getItem('clay-settings')) || {};
-        } catch (e) {
-            console.error('Failed to parse clay-settings:', e);
-        }
-        username = settings.AGENT_TELEGRAM_USERNAME || '@MyAgentBot';
-    }
-    // Normalize
-    if (username && !username.startsWith('@')) {
-        username = '@' + username;
-    }
-    return username || '@MyAgentBot';
+    return normalizeBotUsername(readClaySettings().AGENT_TELEGRAM_USERNAME);
 }
 
-/**
- * Get all session info.
- * @returns {object}
- */
+function saveBotUsername(username) {
+    var normalized = normalizeBotUsername(username);
+    if (!normalized) {
+        return false;
+    }
+    var settings = readClaySettings();
+    settings.AGENT_TELEGRAM_USERNAME = normalized;
+    localStorage.setItem('clay-settings', JSON.stringify(settings));
+    return true;
+}
+
+function removeLegacyKeys() {
+    try {
+        localStorage.removeItem(LEGACY_BOT_USERNAME_KEY);
+    } catch (e) {}
+}
+
 function getSessionInfo() {
     return {
         hasSession: hasSession(),
@@ -129,6 +125,8 @@ exports.saveSession = saveSession;
 exports.loadSession = loadSession;
 exports.clearSession = clearSession;
 exports.hasSession = hasSession;
+exports.normalizeBotUsername = normalizeBotUsername;
 exports.saveBotUsername = saveBotUsername;
 exports.getBotUsername = getBotUsername;
+exports.removeLegacyKeys = removeLegacyKeys;
 exports.getSessionInfo = getSessionInfo;

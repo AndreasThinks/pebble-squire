@@ -1,20 +1,22 @@
 {
   "name": "squire-scripts",
   "version": "1.0.0",
-  "description": "Build scripts for Squire - Telegram bundle generation",
+  "description": "Build scripts for Squire - reproducible Telegram/GramJS bundle generation",
   "private": true,
   "scripts": {
-    "build:telegram": "node build-gramjs.js"
+    "build:telegram": "node build-gramjs.js",
+    "verify:telegram": "node build-gramjs.js --check",
+    "smoke:telegram": "node smoke-test-bundle.js"
   },
   "dependencies": {
-    "telegram": "^2.26.22"
+    "buffer": "6.0.3",
+    "js-sha1": "0.7.0",
+    "js-sha256": "0.11.1",
+    "js-sha512": "0.9.0",
+    "telegram": "2.26.22"
   },
   "devDependencies": {
-    "@babel/cli": "^7.28.6",
-    "@babel/core": "^7.29.0",
-    "@babel/preset-env": "^7.29.0",
-    "@esbuild-plugins/node-globals-polyfill": "^0.2.3",
-    "@esbuild-plugins/node-modules-polyfill": "^0.2.2",
-    "esbuild": "^0.27.4"
+    "acorn": "3.3.0",
+    "esbuild": "0.27.7"
   }
 }

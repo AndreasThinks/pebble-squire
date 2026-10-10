@@ -13,3 +13,4 @@ cmake-build-debug/
 package-lock.json
 .env
 .secrets
+!scripts/package-lock.json

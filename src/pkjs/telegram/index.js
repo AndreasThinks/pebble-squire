@@ -22,6 +22,7 @@
 var client = require('./client');
 var auth = require('./auth');
 var session = require('./session');
+var appConfig = require('./app_config');
 
 module.exports = {
     // Client
@@ -30,6 +31,7 @@ module.exports = {
     getCurrentUser: client.getCurrentUser,
     disconnect: client.disconnect,
     getClient: client.getClient,
+    getEventBuilders: client.getEventBuilders,
     resetClient: client.resetClient,
 
     // Auth
@@ -39,6 +41,9 @@ module.exports = {
     checkConnection: auth.checkConnection,
     logout: auth.logout,
     getAuthState: auth.getAuthState,
+    clearPendingAuth: auth.clearPendingAuth,
+    isValidPhoneNumber: auth.isValidPhoneNumber,
+    AUTH_ERROR_REASONS: auth.REASONS,
 
     // Session
     saveSession: session.saveSession,
@@ -47,5 +52,8 @@ module.exports = {
     hasSession: session.hasSession,
     saveBotUsername: session.saveBotUsername,
     getBotUsername: session.getBotUsername,
+    normalizeBotUsername: session.normalizeBotUsername,
+    removeLegacyKeys: session.removeLegacyKeys,
+    isAppConfigured: appConfig.isConfigured,
     getSessionInfo: session.getSessionInfo
 };

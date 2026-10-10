@@ -42,8 +42,12 @@ void history_init(void) {
   s_thread_id[0] = '\0';
 }
 
-void history_set_loading(bool loading) {
-  s_loading = loading;
+void history_begin(void) {
+  // A fresh batch replaces whatever we had; never merge two batches.
+  s_count = 0;
+  s_done = false;
+  s_loading = true;
+  s_thread_id[0] = '\0';
 }
 
 bool history_is_loading(void) {
@@ -59,7 +63,7 @@ void history_add_prompt(const char* text) {
   s_entries[s_count].type = HistoryEntryTypePrompt;
   prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
-  SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History prompt %d: %.50s", s_count, text);
+  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "History prompt %d (%d bytes)", s_count, (int)strlen(text));
 }
 
 void history_add_response(const char* text) {
@@ -67,7 +71,7 @@ void history_add_response(const char* text) {
   s_entries[s_count].type = HistoryEntryTypeResponse;
   prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
-  SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History response %d: %.50s", s_count, text);
+  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "History response %d (%d bytes)", s_count, (int)strlen(text));
 }
 
 void history_set_thread_id(const char* thread_id) {
@@ -89,7 +93,7 @@ void history_push_prompt(const char* text) {
   s_entries[s_count].type = HistoryEntryTypePrompt;
   prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
-  SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History push prompt %d: %.50s", s_count, text);
+  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "History push prompt %d", s_count);
 }
 
 void history_push_response(const char* text) {
@@ -97,20 +101,26 @@ void history_push_response(const char* text) {
   s_entries[s_count].type = HistoryEntryTypeResponse;
   prv_copy_entry_text(s_entries[s_count].text, text, sizeof(s_entries[s_count].text));
   s_count++;
-  SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History push response %d: %.50s", s_count, text);
+  SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "History push response %d", s_count);
 }
 
 void history_push_thread_id(const char* thread_id) {
   history_set_thread_id(thread_id);
 }
 
-void history_set_done(void) {
+void history_set_done(int status) {
+  if (status != HISTORY_STATUS_OK) {
+    // Don't present a partial batch as if it were the whole history.
+    s_count = 0;
+    s_thread_id[0] = '\0';
+  }
   s_done = true;
   s_loading = false;
-  SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History done. %d entries.", s_count);
+  SQUIRE_LOG(APP_LOG_LEVEL_INFO, "History done (status %d). %d entries.", status, s_count);
   if (s_done_callback) {
-    s_done_callback();
+    void (*callback)(void) = s_done_callback;
     s_done_callback = NULL;
+    callback();
   }
 }
 

@@ -8,6 +8,9 @@ require('module')._resolveFilename = function(request, parent) {
   if (request === 'package.json') {
     return path.resolve(__dirname, 'mocks/package.json.js');
   }
+  if (request === 'squire_telegram_app') {
+    return path.resolve(__dirname, 'mocks/squire_telegram_app.js');
+  }
   if (request === '@rebble/clay') {
     return path.resolve(__dirname, 'mocks/clay.js');
   }

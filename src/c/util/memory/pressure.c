@@ -18,93 +18,99 @@
 #include "../logging.h"
 #include <pebble.h>
 
-#include <@rebble/linked-list/linked-list.h>
-
-static LinkedRoot *s_callback_list = NULL;
-int s_max_priority = 0;
-
 typedef struct {
   MemoryPressureHandler handler;
   int priority;
   void *context;
 } MemoryPressureCallbackEntry;
 
-static bool prv_entry_compare(void *object1, void *object2);
-static void prv_update_max_priority();
-static bool prv_max_priority_callback(void *object, void *context);
+static MemoryPressureCallbackEntry s_callbacks[MEMORY_PRESSURE_MAX_CALLBACKS];
+static int s_callback_count = 0;
+static bool s_freeing = false;
 
 void memory_pressure_init() {
-  s_callback_list = linked_list_create_root();
+  s_callback_count = 0;
+  s_freeing = false;
 }
 
 void memory_pressure_deinit() {
-  linked_list_clear(s_callback_list);
+  s_callback_count = 0;
 }
 
-void memory_pressure_register_callback(MemoryPressureHandler handler, int priority, void *context) {
-  MemoryPressureCallbackEntry *entry = malloc(sizeof(MemoryPressureCallbackEntry));
-  entry->handler = handler;
-  entry->priority = priority;
-  entry->context = context;
-  linked_list_append(s_callback_list, entry);
-  if (entry->priority > s_max_priority) {
-    s_max_priority = entry->priority;
+bool memory_pressure_register_callback(MemoryPressureHandler handler, int priority, void *context) {
+  for (int i = 0; i < s_callback_count; ++i) {
+    if (s_callbacks[i].handler == handler && s_callbacks[i].context == context) {
+      return false;
+    }
   }
+  if (s_callback_count >= MEMORY_PRESSURE_MAX_CALLBACKS) {
+    SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "memory_pressure_register_callback: table full");
+    return false;
+  }
+  s_callbacks[s_callback_count++] = (MemoryPressureCallbackEntry) {
+    .handler = handler,
+    .priority = priority,
+    .context = context,
+  };
   SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "memory_pressure_register_callback: %p, priority %d", handler, priority);
+  return true;
 }
 
-void memory_pressure_unregister_callback(MemoryPressureHandler handler) {
-  int idx = linked_list_find_compare(s_callback_list, handler, prv_entry_compare);
-  if (idx == -1) {
-    return;
+void memory_pressure_unregister_callback(MemoryPressureHandler handler, void *context) {
+  for (int i = 0; i < s_callback_count; ++i) {
+    if (s_callbacks[i].handler == handler && s_callbacks[i].context == context) {
+      for (int j = i; j < s_callback_count - 1; ++j) {
+        s_callbacks[j] = s_callbacks[j + 1];
+      }
+      --s_callback_count;
+      return;
+    }
   }
-  MemoryPressureCallbackEntry *entry = linked_list_get(s_callback_list, idx);
-  linked_list_remove(s_callback_list, idx);
-  if (entry->priority == s_max_priority) {
-    prv_update_max_priority();
-  }
-  free(entry);
+}
+
+int memory_pressure_callback_count() {
+  return s_callback_count;
 }
 
 bool memory_pressure_try_free() {
+  if (s_freeing) {
+    // A handler is already running and has itself run out of memory. Don't
+    // recurse into the handlers (they're mid-mutation); let the inner
+    // allocation fail instead.
+    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Memory emergency while already freeing memory; not recursing.");
+    return false;
+  }
   SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Memory emergency! Trying to free memory.");
-  int count = linked_list_count(s_callback_list);
-  if (count == 0) {
+  if (s_callback_count == 0) {
     SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "No memory freeing callbacks registered");
     return false;
   }
-  for (int p = 0; p <= s_max_priority; ++p) {
+  int max_priority = 0;
+  for (int i = 0; i < s_callback_count; ++i) {
+    if (s_callbacks[i].priority > max_priority) {
+      max_priority = s_callbacks[i].priority;
+    }
+  }
+  s_freeing = true;
+  bool freed = false;
+  for (int p = 0; p <= max_priority && !freed; ++p) {
     SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Trying priority level %d", p);
-    for (int i = 0; i < count; ++i) {
-      MemoryPressureCallbackEntry *entry = linked_list_get(s_callback_list, i);
-      if (entry->priority != p) {
+    // Handlers may unregister themselves (or others) while running, so copy
+    // the entry and re-check bounds on every step rather than caching them.
+    for (int i = 0; i < s_callback_count; ++i) {
+      MemoryPressureCallbackEntry entry = s_callbacks[i];
+      if (entry.priority != p) {
         continue;
       }
-      SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Calling memory pressure callback %p with priority %d", entry->handler, entry->priority);
-      if (entry->handler(entry->context)) {
+      SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Calling memory pressure callback %p with priority %d", entry.handler, entry.priority);
+      if (entry.handler(entry.context)) {
         SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Freed some memory!");
-        return true;
+        freed = true;
+        break;
       }
       SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "No joy.");
     }
   }
-  return false;
-}
-
-static bool prv_entry_compare(void *object1, void *object2) {
-  MemoryPressureCallbackEntry *entry = object1;
-  return entry->handler == object2;
-}
-
-static void prv_update_max_priority() {
-  s_max_priority = 0;
-  linked_list_foreach(s_callback_list, prv_max_priority_callback, NULL);
-}
-
-static bool prv_max_priority_callback(void *object, void *context) {
-  MemoryPressureCallbackEntry *entry = object;
-  if (entry->priority > s_max_priority) {
-    s_max_priority = entry->priority;
-  }
-  return true;
+  s_freeing = false;
+  return freed;
 }

@@ -21,6 +21,8 @@
 #include "../util/persist_keys.h"
 #include "../util/logging.h"
 #include "../util/auth_flow.h"
+#include "../util/tuple_util.h"
+#include "../util/result_window.h"
 
 static EventHandle s_event_handle;
 
@@ -72,28 +74,35 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
         SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to write confirm transcripts setting: %d", status);
       }
     } else if (tuple->key == MESSAGE_KEY_TELEGRAM_CONNECTED) {
-      status_t status = persist_write_bool(PERSIST_KEY_TELEGRAM_CONNECTED, tuple->value->int8);
+      bool connected = tuple_get_int32(tuple) != 0;
+      status_t status = persist_write_bool(PERSIST_KEY_TELEGRAM_CONNECTED, connected);
       if (status < 0) {
         SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to write telegram connected: %d", status);
       }
-      SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Telegram connected: %s", tuple->value->int8 ? "true" : "false");
+      SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Telegram connected: %s", connected ? "true" : "false");
       // Only a positive status is an auth success; a disconnect notification
       // (e.g. the phone reporting an expired session mid-auth) must not
       // complete a pending auth flow as signed in.
-      if (tuple->value->int8) {
+      if (connected) {
         const char* username = NULL;
         Tuple* username_tuple = dict_find(iter, MESSAGE_KEY_AGENT_TELEGRAM_USERNAME);
-        if (username_tuple && username_tuple->length > 0) {
+        if (username_tuple && username_tuple->type == TUPLE_CSTRING && username_tuple->length > 1) {
           username = username_tuple->value->cstring;
         }
-        auth_flow_handle_message(tuple->key, username);
+        auth_flow_handle_message(tuple->key, username, 1);
       }
-    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_CODE_SENT) {
-      auth_flow_handle_message(tuple->key, NULL);
-    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_PASSWORD_NEEDED) {
-      auth_flow_handle_message(tuple->key, NULL);
-    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
-      auth_flow_handle_message(tuple->key, NULL);
+    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_CODE_SENT ||
+               tuple->key == MESSAGE_KEY_TELEGRAM_PASSWORD_NEEDED ||
+               tuple->key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
+      auth_flow_handle_message(tuple->key, NULL, tuple_get_int32(tuple));
+    } else if (tuple->key == MESSAGE_KEY_TELEGRAM_LOGOUT_RESULT) {
+      if (tuple_get_int32(tuple) == 1) {
+        result_window_push("Signed Out", "Signed out of Telegram. This session was ended on Telegram's servers.", NULL, GColorWhite);
+      } else {
+        result_window_push_persistent("Signed Out Locally",
+            "Squire forgot its Telegram session, but couldn't reach Telegram to end it. Remove \"Squire\" under Telegram > Settings > Devices.",
+            NULL, GColorWhite);
+      }
     }
   }
 }

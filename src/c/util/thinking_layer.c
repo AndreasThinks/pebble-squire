@@ -42,9 +42,16 @@ ThinkingLayer* thinking_layer_create(GRect rect) {
   }
   
   ThinkingLayer* layer = blayer_create_with_data(rect, sizeof(ThinkingLayerData));
+  if (!layer) {
+    return NULL;
+  }
   ThinkingLayerData* data = layer_get_data(layer);
   data->progress = 0;
   data->animation = animation_create();
+  if (!data->animation) {
+    layer_destroy(layer);
+    return NULL;
+  }
   animation_set_curve(data->animation, AnimationCurveLinear);
   animation_set_duration(data->animation, 1500);
   animation_set_play_count(data->animation, ANIMATION_PLAY_COUNT_INFINITE);

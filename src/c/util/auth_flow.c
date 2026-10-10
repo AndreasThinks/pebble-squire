@@ -25,7 +25,35 @@
 
 static AuthFlowCompleteCallback s_complete_callback = NULL;
 static bool s_waiting_for_code = false;
+static int s_code_length = 5;
 static char s_agent_username[64];
+
+#define DEFAULT_CODE_LENGTH 5
+
+static const char* prv_error_message(int32_t reason) {
+  switch (reason) {
+    case AuthErrorInvalidPhone:
+      return "Telegram didn't accept that phone number. Check it and try again.";
+    case AuthErrorInvalidCode:
+      return "That code wasn't right. Try entering it again.";
+    case AuthErrorCodeExpired:
+      return "That code has expired. Start again to get a new one.";
+    case AuthErrorFloodWait:
+      return "Too many attempts. Telegram asks you to wait before trying again.";
+    case AuthErrorBadPassword:
+      return "Incorrect two-step verification password. Re-enter it in Squire's settings on your phone.";
+    case AuthErrorNoPendingSignIn:
+      return "The sign-in attempt expired. Start again.";
+    case AuthErrorAppNotConfigured:
+      return "This build of Squire has no Telegram API credentials. Rebuild it with TELEGRAM_APP_ID and TELEGRAM_APP_HASH set.";
+    case AuthErrorNetwork:
+      return "Couldn't reach Telegram. Check your phone's connection and try again.";
+    case AuthErrorNoAccount:
+      return "There's no Telegram account for that number. Sign up in the Telegram app first.";
+    default:
+      return "Could not sign in to Telegram. Please try again.";
+  }
+}
 
 static void prv_cancel(void) {
   s_complete_callback = NULL;
@@ -85,10 +113,13 @@ void auth_flow_start(AuthFlowCompleteCallback callback) {
   auth_entry_window_push("Phone Number", 15, prv_phone_entered, prv_cancel);
 }
 
-void auth_flow_handle_message(uint32_t key, const char* value) {
+void auth_flow_handle_message(uint32_t key, const char* value, int32_t number) {
   if (key == MESSAGE_KEY_TELEGRAM_CODE_SENT) {
     if (s_waiting_for_code) {
-      auth_entry_window_push_with_prefix("Enter Code", 5, false, prv_code_entered, prv_cancel);
+      // The phone reports the code length Telegram announced (older phone
+      // code sent 1); fall back to the usual five digits.
+      s_code_length = (number >= 4 && number <= 8) ? number : DEFAULT_CODE_LENGTH;
+      auth_entry_window_push_with_prefix("Enter Code", s_code_length, false, prv_code_entered, prv_cancel);
     }
   } else if (key == MESSAGE_KEY_TELEGRAM_CONNECTED) {
     if (value) {
@@ -112,7 +143,14 @@ void auth_flow_handle_message(uint32_t key, const char* value) {
         NULL, GColorWhite);
     s_waiting_for_code = false;
   } else if (key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
-    result_window_push_persistent("Auth Failed", "Could not sign in to Telegram. Please try again.", NULL, GColorWhite);
+    if (number == AuthErrorInvalidCode && s_complete_callback) {
+      // The phone keeps the pending sign-in; let the user re-enter the code
+      // once they've dismissed the error.
+      auth_entry_window_push_with_prefix("Enter Code", s_code_length, false, prv_code_entered, prv_cancel);
+      result_window_push_persistent("Sign-In Failed", prv_error_message(number), NULL, GColorWhite);
+      return;
+    }
+    result_window_push_persistent("Sign-In Failed", prv_error_message(number), NULL, GColorWhite);
     if (s_complete_callback) {
       AuthFlowCompleteCallback cb = s_complete_callback;
       s_complete_callback = NULL;

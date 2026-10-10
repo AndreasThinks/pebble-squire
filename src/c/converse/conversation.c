@@ -19,6 +19,11 @@
 #include "../util/logging.h"
 #include "../features.h"
 
+#include <string.h>
+
+#define CONVERSATION_INITIAL_CAPACITY 16
+#define CONVERSATION_CAPACITY_STEP 8
+
 struct ConversationEntry {
   EntryType type;
   union {
@@ -30,8 +35,12 @@ struct ConversationEntry {
   } content;
 };
 
+// entries is a table of individually allocated entries, so ConversationEntry
+// pointers handed out to the UI stay valid when the table grows. Slots below
+// deleted_entries have been freed (NULL). Discarded thoughts stay in the
+// table as EntryTypeDeleted until they reach the front.
 struct Conversation {
-  ConversationEntry* entries;
+  ConversationEntry** entries;
   int deleted_entries;
   int nulled_entries;
   int entry_count;
@@ -39,30 +48,42 @@ struct Conversation {
   char thread_id[37];
 };
 
-static ConversationEntry* prv_create_entry(Conversation* conversation);
-void prv_destroy_entry(ConversationEntry *entry);
+static void prv_destroy_entry_content(ConversationEntry *entry);
+static bool prv_append_entry(Conversation* conversation, ConversationEntry* entry);
+static ConversationEntry* prv_new_entry(EntryType type);
+static char* prv_strdup(const char* text);
 const char* prv_type_to_string(EntryType type);
 
 Conversation* conversation_create() {
   Conversation *conversation = bmalloc(sizeof(Conversation));
-  conversation->deleted_entries = 0;
-  conversation->nulled_entries = 0;
-  conversation->entry_count = 0;
-  conversation->entry_allocated = 30;
-  conversation->entries = bmalloc(sizeof(ConversationEntry) * conversation->entry_allocated);
-  conversation->thread_id[0] = 0;
+  if (!conversation) {
+    return NULL;
+  }
+  memset(conversation, 0, sizeof(Conversation));
+  conversation->entries = bmalloc(sizeof(ConversationEntry*) * CONVERSATION_INITIAL_CAPACITY);
+  if (!conversation->entries) {
+    free(conversation);
+    return NULL;
+  }
+  conversation->entry_allocated = CONVERSATION_INITIAL_CAPACITY;
   return conversation;
 }
 
 void conversation_destroy(Conversation* conversation) {
+  if (!conversation) {
+    return;
+  }
   for (int i = conversation->deleted_entries; i < conversation->entry_count; ++i) {
-    prv_destroy_entry(&conversation->entries[i]);
+    if (conversation->entries[i]) {
+      prv_destroy_entry_content(conversation->entries[i]);
+      free(conversation->entries[i]);
+    }
   }
   free(conversation->entries);
   free(conversation);
 }
 
-void prv_destroy_entry(ConversationEntry *entry) {
+static void prv_destroy_entry_content(ConversationEntry *entry) {
   switch (entry->type) {
     case EntryTypeDeleted:
       // Nothing to do here.
@@ -97,70 +118,138 @@ void prv_destroy_entry(ConversationEntry *entry) {
   entry->type = EntryTypeDeleted;
 }
 
-static ConversationEntry* prv_create_entry(Conversation* conversation) {
-  if (conversation->entry_count >= conversation->entry_allocated) {
-    ConversationEntry *new_entries = bmalloc(sizeof(ConversationEntry) * (conversation->entry_allocated + 1));
-    memcpy(new_entries, conversation->entries, sizeof(ConversationEntry) * conversation->entry_allocated);
-    free(conversation->entries);
-    ++conversation->entry_allocated;
-    conversation->entries = new_entries;
+static char* prv_strdup(const char* text) {
+  size_t len = strlen(text);
+  char* copy = bmalloc(len + 1);
+  if (copy) {
+    memcpy(copy, text, len + 1);
   }
-  memset(&conversation->entries[conversation->entry_count], 0, sizeof(ConversationEntry));
-  return &conversation->entries[conversation->entry_count++];
+  return copy;
 }
 
-void conversation_add_prompt(Conversation* conversation, const char* prompt_text) {
-  ConversationEntry *entry = prv_create_entry(conversation);
-  entry->type = EntryTypePrompt;
+static ConversationEntry* prv_new_entry(EntryType type) {
+  ConversationEntry* entry = bmalloc(sizeof(ConversationEntry));
+  if (entry) {
+    memset(entry, 0, sizeof(ConversationEntry));
+    entry->type = type;
+  }
+  return entry;
+}
+
+// Links a fully built entry into the table, growing the table if needed.
+// Content is always allocated before calling this, so a memory pressure
+// callback that runs during the growth allocation (and deletes entries from
+// the front) never sees a half-built entry.
+static bool prv_append_entry(Conversation* conversation, ConversationEntry* entry) {
+  if (conversation->entry_count >= conversation->entry_allocated && conversation->deleted_entries > 0) {
+    // Reclaim slots freed at the front before reaching for the heap. Entry
+    // pointers are unaffected; only indices shift.
+    int shift = conversation->deleted_entries;
+    memmove(conversation->entries, conversation->entries + shift,
+            sizeof(ConversationEntry*) * (conversation->entry_count - shift));
+    conversation->entry_count -= shift;
+    conversation->deleted_entries = 0;
+  }
+  if (conversation->entry_count >= conversation->entry_allocated) {
+    int new_allocated = conversation->entry_allocated + CONVERSATION_CAPACITY_STEP;
+    ConversationEntry **new_entries = bmalloc(sizeof(ConversationEntry*) * new_allocated);
+    if (!new_entries) {
+      SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Couldn't grow conversation to %d entries.", new_allocated);
+      return false;
+    }
+    // Read the table only now: bmalloc may have run memory pressure handlers
+    // that deleted (NULLed) entries at the front.
+    memcpy(new_entries, conversation->entries, sizeof(ConversationEntry*) * conversation->entry_count);
+    free(conversation->entries);
+    conversation->entries = new_entries;
+    conversation->entry_allocated = new_allocated;
+  }
+  conversation->entries[conversation->entry_count++] = entry;
+  return true;
+}
+
+bool conversation_add_prompt(Conversation* conversation, const char* prompt_text) {
+  ConversationEntry *entry = prv_new_entry(EntryTypePrompt);
   ConversationPrompt *prompt = bmalloc(sizeof(ConversationPrompt));
-  prompt->prompt = bmalloc(strlen(prompt_text) + 1);
-  strcpy(prompt->prompt, prompt_text);
+  char *text = prv_strdup(prompt_text);
+  if (!entry || !prompt || !text) {
+    goto fail;
+  }
+  prompt->prompt = text;
   entry->content.prompt = prompt;
+  if (!prv_append_entry(conversation, entry)) {
+    goto fail;
+  }
+  return true;
+fail:
+  free(text);
+  free(prompt);
+  free(entry);
+  return false;
 }
 
-void conversation_add_response(Conversation* conversation, const char* response_text) {
-  ConversationEntry *entry = prv_create_entry(conversation);
-  entry->type = EntryTypeResponse;
+static bool prv_add_response(Conversation* conversation, const char* response_text, bool complete) {
+  ConversationEntry *entry = prv_new_entry(EntryTypeResponse);
   ConversationResponse *response = bmalloc(sizeof(ConversationResponse));
-  response->complete = true;
-  response->len = strlen(response_text);
+  char *text = prv_strdup(response_text);
+  if (!entry || !response || !text) {
+    goto fail;
+  }
+  response->complete = complete;
+  response->len = strlen(text);
   response->allocated = response->len + 1;
-  response->response = bmalloc(response->allocated);
-  strcpy(response->response, response_text);
+  response->response = text;
   entry->content.response = response;
+  if (!prv_append_entry(conversation, entry)) {
+    goto fail;
+  }
+  return true;
+fail:
+  free(text);
+  free(response);
+  free(entry);
+  return false;
 }
 
-void conversation_start_response(Conversation *conversation) {
-  ConversationEntry *entry = prv_create_entry(conversation);
-  entry->type = EntryTypeResponse;
-  ConversationResponse *response = bmalloc(sizeof(ConversationResponse));
-  response->complete = false;
-  response->len = 0;
-  response->allocated = 8;
-  response->response = bmalloc(response->allocated);
-  response->response[0] = 0;
-  entry->content.response = response;
+bool conversation_add_response(Conversation* conversation, const char* response_text) {
+  return prv_add_response(conversation, response_text, true);
 }
 
-static void prv_append_to_response(ConversationResponse *response, const char* fragment) {
+bool conversation_start_response(Conversation *conversation) {
+  return prv_add_response(conversation, "", false);
+}
+
+// Appends fragment to response. On failure the response keeps its previous
+// buffer and text untouched.
+static bool prv_append_to_response(ConversationResponse *response, const char* fragment) {
   size_t len = strlen(fragment);
-  while (response->len + len >= response->allocated) {
-    response->allocated *= 2;
-    char* new_resp = bmalloc(response->allocated);
-    SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Expanding buffer to %d bytes. New buffer: %p. Old buffer: %p.", response->allocated, new_resp, response->response);
-    strcpy(new_resp, response->response);
-    SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Copied %d bytes.", strlen(response->response) + 1);
+  if (len == 0) {
+    return true;
+  }
+  size_t needed = response->len + len + 1;
+  if (needed > response->allocated) {
+    // Grow to exactly what's needed plus a little slack: fragments are large
+    // (whole Telegram messages), and doubling would waste scarce heap.
+    size_t new_allocated = needed + 32;
+    char* new_resp = bmalloc(new_allocated);
+    if (!new_resp) {
+      SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Couldn't expand response buffer to %d bytes.", (int)new_allocated);
+      return false;
+    }
+    memcpy(new_resp, response->response, response->len + 1);
     free(response->response);
     response->response = new_resp;
+    response->allocated = new_allocated;
   }
+  memcpy(response->response + response->len, fragment, len + 1);
   response->len += len;
-  strcat(response->response, fragment);
+  return true;
 }
 
 static ConversationResponse* prv_find_last_open_response(Conversation* conversation) {
   for (int i = conversation->entry_count - 1; i >= conversation->deleted_entries; --i) {
-    ConversationEntry* entry = &conversation->entries[i];
-    if (entry->type != EntryTypeResponse) {
+    ConversationEntry* entry = conversation->entries[i];
+    if (!entry || entry->type != EntryTypeResponse) {
       continue;
     }
     if (!entry->content.response->complete) {
@@ -170,100 +259,182 @@ static ConversationResponse* prv_find_last_open_response(Conversation* conversat
   return NULL;
 }
 
-bool conversation_add_response_fragment(Conversation* conversation, const char* fragment) {
+ConversationAppendResult conversation_add_response_fragment(Conversation* conversation, const char* fragment) {
   ConversationResponse* response = prv_find_last_open_response(conversation);
-  bool added_entry = false;
+  ConversationAppendResult result = ConversationAppendOk;
   if (response == NULL) {
-    added_entry = true;
-    conversation_start_response(conversation);
+    if (!conversation_start_response(conversation)) {
+      return ConversationAppendFailed;
+    }
+    result = ConversationAppendNewEntry;
     response = prv_find_last_open_response(conversation);
   }
-  prv_append_to_response(response, fragment);
-  return added_entry;
+  if (!prv_append_to_response(response, fragment)) {
+    // If we just created the entry it stays (empty and open); the caller
+    // reports the failure and completes it.
+    return ConversationAppendFailed;
+  }
+  return result;
+}
+
+bool conversation_reset_response(Conversation *conversation) {
+  ConversationResponse* response = prv_find_last_open_response(conversation);
+  if (response == NULL) {
+    return false;
+  }
+  response->len = 0;
+  response->response[0] = '\0';
+  return true;
 }
 
 void conversation_complete_response(Conversation *conversation) {
   ConversationResponse* response = prv_find_last_open_response(conversation);
   if (response == NULL) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Trying to complete a response, but couldn't find any.");
+    SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Trying to complete a response, but couldn't find any.");
     return;
   }
   response->complete = true;
 }
 
-void conversation_add_thought(Conversation* conversation, char* thought_text) {
-  ConversationEntry* entry = prv_create_entry(conversation);
+bool conversation_add_thought(Conversation* conversation, char* thought_text) {
+  ConversationEntry* entry = prv_new_entry(EntryTypeThought);
   ConversationThought* thought = bmalloc(sizeof(ConversationThought));
-  thought->thought = bmalloc(strlen(thought_text) + 1);
-  strcpy(thought->thought, thought_text);
-  entry->type = EntryTypeThought;
+  char* text = prv_strdup(thought_text);
+  if (!entry || !thought || !text) {
+    goto fail;
+  }
+  thought->thought = text;
   entry->content.thought = thought;
+  if (!prv_append_entry(conversation, entry)) {
+    goto fail;
+  }
+  return true;
+fail:
+  free(text);
+  free(thought);
+  free(entry);
+  return false;
 }
 
-void conversation_add_action(Conversation* conversation, ConversationAction* action) {
+bool conversation_add_action(Conversation* conversation, ConversationAction* action) {
+  ConversationEntry* entry = prv_new_entry(EntryTypeAction);
   ConversationAction* new_action = bmalloc(sizeof(ConversationAction));
+  if (!entry || !new_action) {
+    goto fail;
+  }
   memcpy(new_action, action, sizeof(ConversationAction));
-  ConversationEntry* entry = prv_create_entry(conversation);
-  entry->type = EntryTypeAction;
   entry->content.action = new_action;
+  if (!prv_append_entry(conversation, entry)) {
+    goto fail;
+  }
+  return true;
+fail:
+  free(new_action);
+  free(entry);
+  return false;
 }
 
-void conversation_add_error(Conversation* conversation, const char* error_text) {
-  ConversationEntry* entry = prv_create_entry(conversation);
+bool conversation_add_error(Conversation* conversation, const char* error_text) {
+  ConversationEntry* entry = prv_new_entry(EntryTypeError);
   ConversationError* error = bmalloc(sizeof(ConversationError));
-  error->message = bmalloc(strlen(error_text) + 1);
-  strcpy(error->message, error_text);
-  entry->type = EntryTypeError;
+  char* text = prv_strdup(error_text);
+  if (!entry || !error || !text) {
+    goto fail;
+  }
+  error->message = text;
   entry->content.error = error;
+  if (!prv_append_entry(conversation, entry)) {
+    goto fail;
+  }
+  return true;
+fail:
+  free(text);
+  free(error);
+  free(entry);
+  return false;
 }
 
-void conversation_delete_first_entry(Conversation* conversation) {
-  while (conversation->deleted_entries < conversation->entry_count
-         && conversation->entries[conversation->deleted_entries].type == EntryTypeDeleted) {
+// Drops discarded (EntryTypeDeleted) entries sitting at the front.
+static void prv_skip_deleted_front(Conversation* conversation) {
+  while (conversation->deleted_entries < conversation->entry_count) {
+    ConversationEntry* entry = conversation->entries[conversation->deleted_entries];
+    if (entry && entry->type != EntryTypeDeleted) {
+      return;
+    }
+    if (entry) {
+      free(entry);
+      conversation->nulled_entries--;
+    }
+    conversation->entries[conversation->deleted_entries] = NULL;
     conversation->deleted_entries++;
-    conversation->nulled_entries--;
   }
-  if (conversation->deleted_entries >= conversation->entry_count) {
-    return;
-  }
-  prv_destroy_entry(&conversation->entries[conversation->deleted_entries]);
-  conversation->deleted_entries++;
 }
 
+ConversationEntry* conversation_peek_first(Conversation* conversation) {
+  prv_skip_deleted_front(conversation);
+  if (conversation->deleted_entries >= conversation->entry_count) {
+    return NULL;
+  }
+  return conversation->entries[conversation->deleted_entries];
+}
+
+bool conversation_delete_first_entry(Conversation* conversation) {
+  ConversationEntry* entry = conversation_peek_first(conversation);
+  if (!entry) {
+    return false;
+  }
+  if (entry->type == EntryTypeResponse && !entry->content.response->complete) {
+    // Still being written to; freeing it would lose the reply in progress.
+    return false;
+  }
+  prv_destroy_entry_content(entry);
+  free(entry);
+  conversation->entries[conversation->deleted_entries] = NULL;
+  conversation->deleted_entries++;
+  return true;
+}
 
 void conversation_delete_last_thought(Conversation* conversation) {
   SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Deleting last thought");
   for (int i = conversation->entry_count - 2; i >= conversation->deleted_entries; --i) {
-    ConversationEntry* entry = &conversation->entries[i];
-    if (entry->type == EntryTypeThought) {
+    ConversationEntry* entry = conversation->entries[i];
+    if (entry && entry->type == EntryTypeThought) {
       SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Deleting thought %d", i);
-      prv_destroy_entry(entry);
+      prv_destroy_entry_content(entry);
       conversation->nulled_entries++;
       return;
     }
   }
 }
 
+int conversation_first_index(Conversation* conversation) {
+  return conversation->deleted_entries;
+}
+
+int conversation_end_index(Conversation* conversation) {
+  return conversation->entry_count;
+}
+
 ConversationEntry* conversation_entry_at_index(Conversation* conversation, int index) {
-  if (index >= conversation->entry_count) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Caller asked for entry %d, but only %d exist.", index, conversation->entry_count);
+  if (index < conversation->deleted_entries || index >= conversation->entry_count) {
+    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Caller asked for entry %d, but only %d-%d exist.", index, conversation->deleted_entries, conversation->entry_count);
     return NULL;
   }
-  return &conversation->entries[index];
+  return conversation->entries[index];
 }
 
 ConversationEntry* conversation_peek(Conversation* conversation) {
   if (conversation->entry_count == conversation->deleted_entries) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Tried to peek at conversation, but no entries yet.");
+    SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Tried to peek at conversation, but no entries yet.");
     return NULL;
   }
-  return &conversation->entries[conversation->entry_count-1];
+  return conversation->entries[conversation->entry_count-1];
 }
 
 ConversationEntry* conversation_get_last_of_type(Conversation* conversation, EntryType type) {
   for (int i = conversation->entry_count - 1; i >= conversation->deleted_entries; --i) {
-    ConversationEntry* entry = &conversation->entries[i];
-    if (entry->type == type) {
+    ConversationEntry* entry = conversation->entries[i];
+    if (entry && entry->type == type) {
       return entry;
     }
   }
@@ -382,9 +553,9 @@ bool conversation_assistant_just_started(Conversation* conversation) {
   if (!prv_entry_type_is_assistant(entry)) {
     return false;
   }
-  if (conversation->entry_count == 1) {
+  if (conversation->entry_count - 1 <= conversation->deleted_entries) {
     return true;
   }
-  ConversationEntry *previous = &conversation->entries[conversation->entry_count - 2];
-  return !prv_entry_type_is_assistant(previous);
+  ConversationEntry *previous = conversation->entries[conversation->entry_count - 2];
+  return !previous || !prv_entry_type_is_assistant(previous);
 }

@@ -20,8 +20,21 @@
 
 typedef bool (*MemoryPressureHandler)(void *context);
 
+// Maximum number of simultaneously registered callbacks. Registration uses a
+// fixed table so that it can never fail because the heap is exhausted.
+#define MEMORY_PRESSURE_MAX_CALLBACKS 8
+
 void memory_pressure_init();
 void memory_pressure_deinit();
-void memory_pressure_register_callback(MemoryPressureHandler handler, int priority, void *context);
-void memory_pressure_unregister_callback(MemoryPressureHandler handler);
+// Registers handler/context. Returns false (and registers nothing) if the
+// table is full or the pair is already registered.
+bool memory_pressure_register_callback(MemoryPressureHandler handler, int priority, void *context);
+// Unregisters the exact handler/context pair. The same handler may be
+// registered with several contexts (e.g. one per ConversationManager), so
+// both must match. Safe to call for a pair that isn't registered.
+void memory_pressure_unregister_callback(MemoryPressureHandler handler, void *context);
+// Asks registered handlers, lowest priority first, to free memory. Returns
+// true if one of them freed something. Re-entrant calls (a handler that
+// itself allocates) return false immediately rather than recursing.
 bool memory_pressure_try_free();
+int memory_pressure_callback_count();

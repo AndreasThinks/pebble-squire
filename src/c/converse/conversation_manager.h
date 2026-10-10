@@ -22,16 +22,24 @@
 
 typedef struct ConversationManager ConversationManager;
 typedef void (*ConversationManagerUpdateHandler)(bool entry_added, void* context);
-typedef void (*ConversationManagerEntryDeletedHandler)(int index, void* context);
+// Called just before `entry` is deleted to relieve memory pressure, so the UI
+// can drop anything that references it.
+typedef void (*ConversationManagerEntryDeletedHandler)(ConversationEntry* entry, void* context);
 
 void conversation_manager_init();
+// Returns NULL if there isn't enough memory to create the manager.
 ConversationManager* conversation_manager_create();
 ConversationManager* conversation_manager_get_current();
+// Unsubscribes from app messages and memory pressure, cancels timers and frees
+// the manager and its conversation. Safe to call with NULL.
 void conversation_manager_destroy(ConversationManager* manager);
 void conversation_manager_set_handler(ConversationManager* manager, ConversationManagerUpdateHandler handler, void* context);
 void conversation_manager_set_deletion_handler(ConversationManager* manager, ConversationManagerEntryDeletedHandler handler);
 void conversation_manager_add_input(ConversationManager* manager, const char* input);
 void conversation_manager_add_action(ConversationManager* manager, ConversationAction* action);
 Conversation* conversation_manager_get_conversation(ConversationManager* manager);
+// True while a prompt has been sent and its reply hasn't finished (CHAT_DONE,
+// a terminal error, or the watchdog).
+bool conversation_manager_is_request_pending(ConversationManager* manager);
 
 #endif

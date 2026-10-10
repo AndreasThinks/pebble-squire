@@ -69,6 +69,9 @@ struct SessionWindow {
   char* last_prompt_label;
   char* thread_id;
   bool load_history;
+  // The window's core layers couldn't be created (out of memory); it pops
+  // itself as soon as it appears.
+  bool load_failed;
 };
 
 static void prv_window_load(Window *window);
@@ -78,7 +81,9 @@ static void prv_window_unload(Window *window);
 static void prv_destroy(SessionWindow *sw);
 static void prv_dictation_status_callback(DictationSession *session, DictationSessionStatus status, char *transcription, void *context);
 static void prv_conversation_manager_handler(bool entry_added, void* context);
-static void prv_conversation_entry_deleted_handler(int index, void* context);
+static void prv_conversation_entry_deleted_handler(ConversationEntry* entry, void* context);
+static bool prv_reserve_segment_slot(SessionWindow* sw);
+static bool prv_append_segment(SessionWindow* sw, ConversationEntry* entry, bool assistant_label);
 static void prv_set_scroll_height(SessionWindow* sw);
 static void prv_click_config_provider(void *context);
 static void prv_select_clicked(ClickRecognizerRef recognizer, void *context);
@@ -104,7 +109,7 @@ static void prv_push_actual_session_window(int timeout, char *starting_prompt, c
 static void prv_auth_flow_complete(bool success, const char* agent_username) {
   if (success) {
     settings_set_telegram_connected(true);
-    char message[96];
+    char message[160];
     if (agent_username && agent_username[0]) {
       snprintf(message, sizeof(message), "Your agent bot is %s.\nMake sure this matches the bot set in the app settings on your phone.", agent_username);
     } else {
@@ -123,45 +128,102 @@ void session_window_push_with_history(int timeout, char *starting_prompt, const 
   prv_push_actual_session_window(timeout, starting_prompt, thread_id);
 }
 
-static void prv_push_actual_session_window(int timeout, char *starting_prompt, const char *thread_id) {
+static char* prv_strdup(const char* text) {
+  size_t len = strlen(text);
+  char* copy = bmalloc(len + 1);
+  if (copy) {
+    memcpy(copy, text, len + 1);
+  }
+  return copy;
+}
 
-  Window *window = bwindow_create();
+static void prv_free_unpushed(SessionWindow* sw) {
+  conversation_manager_destroy(sw->manager);
+  free(sw->segment_layers);
+  free(sw->starting_prompt);
+  free(sw->thread_id);
+  if (sw->window) {
+    window_destroy(sw->window);
+  }
+  free(sw);
+}
+
+static void prv_push_actual_session_window(int timeout, char *starting_prompt, const char *thread_id) {
+  // Allocate everything that isn't a UI layer up front, so that running out
+  // of memory means "couldn't open" rather than a crash halfway through.
   SessionWindow *sw = bmalloc(sizeof(SessionWindow));
+  if (!sw) {
+    goto oom;
+  }
   memset(sw, 0, sizeof(SessionWindow));
-  window_set_user_data(window, sw);
-  sw->window = window;
   sw->timeout = timeout;
+  sw->segment_space = 4;
+  sw->segment_layers = bmalloc(sizeof(SegmentLayer*) * sw->segment_space);
+  sw->manager = conversation_manager_create();
+  sw->window = bwindow_create();
+  if (!sw->segment_layers || !sw->manager || !sw->window) {
+    prv_free_unpushed(sw);
+    goto oom;
+  }
   if (starting_prompt != NULL) {
-    sw->starting_prompt = bmalloc(strlen(starting_prompt) + 1);
-    strncpy(sw->starting_prompt, starting_prompt, strlen(starting_prompt) + 1);
+    sw->starting_prompt = prv_strdup(starting_prompt);
+    if (!sw->starting_prompt) {
+      prv_free_unpushed(sw);
+      goto oom;
+    }
   }
   if (thread_id != NULL) {
-    sw->thread_id = bmalloc(strlen(thread_id) + 1);
-    strncpy(sw->thread_id, thread_id, strlen(thread_id) + 1);
+    sw->thread_id = prv_strdup(thread_id);
+    if (!sw->thread_id) {
+      prv_free_unpushed(sw);
+      goto oom;
+    }
     sw->load_history = true;
   }
-  window_set_window_handlers(window, (WindowHandlers) {
+  window_set_user_data(sw->window, sw);
+  window_set_window_handlers(sw->window, (WindowHandlers) {
       .load = prv_window_load,
       .unload = prv_window_unload,
       .appear = prv_window_appear,
       .disappear = prv_window_disappear,
   });
-  window_stack_push(window, true);
+  window_stack_push(sw->window, true);
+  return;
+oom:
+  SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Not enough memory to open a conversation.");
+  result_window_push("Out of Memory", "Not enough memory to start a conversation. Close some windows and try again.", NULL, GColorWhite);
 }
 
 static void prv_destroy(SessionWindow *sw) {
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "destroying SessionWindow %p.", sw);
   prv_cancel_timeout(sw);
-  dictation_session_destroy(sw->dictation);
-  for (int i = sw->segments_deleted; i < sw->segment_count; ++i) {
-    segment_layer_destroy(sw->segment_layers[i]);
+  if (sw->dictation) {
+    dictation_session_destroy(sw->dictation);
   }
+  for (int i = sw->segments_deleted; i < sw->segment_count; ++i) {
+    if (sw->segment_layers[i]) {
+      segment_layer_destroy(sw->segment_layers[i]);
+    }
+  }
+  // Destroying the manager also unregisters its memory pressure callback,
+  // which references this window's segments; do it before freeing them.
   conversation_manager_destroy(sw->manager);
-  status_bar_layer_destroy(sw->status_layer);
-  scroll_layer_destroy(sw->scroll_layer);
-  bitmap_layer_destroy(sw->button_layer);
-  gbitmap_destroy(sw->button_bitmap);
-  layer_destroy(sw->scroll_indicator_down);
+  sw->manager = NULL;
+  if (sw->status_layer) {
+    status_bar_layer_destroy(sw->status_layer);
+  }
+  if (sw->scroll_layer) {
+    scroll_layer_destroy(sw->scroll_layer);
+  }
+  if (sw->button_layer) {
+    bitmap_layer_destroy(sw->button_layer);
+  }
+  if (sw->button_bitmap) {
+    gbitmap_destroy(sw->button_bitmap);
+  }
+  if (sw->scroll_indicator_down) {
+    layer_destroy(sw->scroll_indicator_down);
+  }
   if (sw->thinking_layer) {
     thinking_layer_destroy(sw->thinking_layer);
     sw->thinking_layer = NULL;
@@ -183,25 +245,28 @@ static void prv_window_load(Window *window) {
   SessionWindow *sw = window_get_user_data(window);
   sw->dictation_pending = true;
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "created SessionWindow %p.", sw);
-  sw->manager = conversation_manager_create();
   conversation_manager_set_handler(sw->manager, prv_conversation_manager_handler, sw);
   conversation_manager_set_deletion_handler(sw->manager, prv_conversation_entry_deleted_handler);
   sw->dictation = dictation_session_create(0, prv_dictation_status_callback, sw);
-  dictation_session_enable_confirmation(sw->dictation, settings_get_should_confirm_transcripts());
+  if (sw->dictation) {
+    dictation_session_enable_confirmation(sw->dictation, settings_get_should_confirm_transcripts());
+  }
 
-  sw->segment_space = 3;
   sw->segment_count = 0;
   sw->segments_deleted = 0;
-  sw->segment_layers = bmalloc(sizeof(SegmentLayer*) * sw->segment_space);
 
   sw->status_layer = bstatus_bar_layer_create();
-  squire_status_bar_config(sw->status_layer);
-  layer_add_child(root_layer, (Layer *)sw->status_layer);
-
   sw->content_height = 0;
   sw->last_prompt_end_offset = 0;
   sw->scroll_indicator_down = blayer_create(GRect(0, window_size.h - STATUS_BAR_LAYER_HEIGHT, window_size.w, STATUS_BAR_LAYER_HEIGHT));
   sw->scroll_layer = bscroll_layer_create(GRect(0, STATUS_BAR_LAYER_HEIGHT, window_size.w, window_size.h - STATUS_BAR_LAYER_HEIGHT));
+  if (!sw->status_layer || !sw->scroll_indicator_down || !sw->scroll_layer) {
+    sw->load_failed = true;
+    return;
+  }
+  squire_status_bar_config(sw->status_layer);
+  layer_add_child(root_layer, (Layer *)sw->status_layer);
+
   scroll_layer_set_shadow_hidden(sw->scroll_layer, true);
   ContentIndicator* indicator = scroll_layer_get_content_indicator(sw->scroll_layer);
   const ContentIndicatorConfig up_config = (ContentIndicatorConfig) {
@@ -235,9 +300,11 @@ static void prv_window_load(Window *window) {
   // This must be added after the scroll layer, to always appear on top.
   sw->button_bitmap = bgbitmap_create_with_resource(RESOURCE_ID_BUTTON_INDICATOR);
   sw->button_layer = bbitmap_layer_create(GRect(window_size.w - 5, window_size.h / 2 - 10, 5, 20));
-  bitmap_layer_set_bitmap(sw->button_layer, sw->button_bitmap);
-  bitmap_layer_set_compositing_mode(sw->button_layer, GCompOpSet);
-  layer_add_child(root_layer, (Layer *)sw->button_layer);
+  if (sw->button_layer) {
+    bitmap_layer_set_bitmap(sw->button_layer, sw->button_bitmap);
+    bitmap_layer_set_compositing_mode(sw->button_layer, GCompOpSet);
+    layer_add_child(root_layer, (Layer *)sw->button_layer);
+  }
 
   // This must be added last.
   layer_add_child(root_layer, sw->scroll_indicator_down);
@@ -246,6 +313,11 @@ static void prv_window_load(Window *window) {
 
 static void prv_window_appear(Window *window) {
   SessionWindow *sw = (SessionWindow *)window_get_user_data(window);
+  if (sw->load_failed) {
+    window_stack_remove(window, false);
+    result_window_push("Out of Memory", "Not enough memory to start a conversation. Close some windows and try again.", NULL, GColorWhite);
+    return;
+  }
   if (sw->thread_id) {
     conversation_set_thread_id(conversation_manager_get_conversation(sw->manager), sw->thread_id);
     free(sw->thread_id);
@@ -256,33 +328,32 @@ static void prv_window_appear(Window *window) {
     int count = history_get_count();
     for (int i = 0; i < count; i++) {
       const HistoryEntry* entry = history_get_entry(i);
+      bool added = false;
       if (entry->type == HistoryEntryTypePrompt) {
-        conversation_add_prompt(conv, entry->text);
+        added = conversation_add_prompt(conv, entry->text);
       } else if (entry->type == HistoryEntryTypeResponse) {
-        conversation_add_response(conv, entry->text);
+        added = conversation_add_response(conv, entry->text);
+      }
+      if (!added) {
+        SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Out of memory loading history; showing %d of %d entries.", i, count);
+        break;
       }
     }
     sw->load_history = false;
     sw->dictation_pending = false;
-    GSize holder_size = scroll_layer_get_content_size(sw->scroll_layer);
-    for (int i = 0; i < count; i++) {
+    // Memory pressure may have deleted the oldest entries while we were
+    // adding (or creating layers), so walk whatever is actually there.
+    int end = conversation_end_index(conv);
+    for (int i = conversation_first_index(conv); i < end; i++) {
       ConversationEntry* conv_entry = conversation_entry_at_index(conv, i);
-      bool is_last = (i == count - 1);
-      bool assistant_label = (conversation_entry_get_type(conv_entry) == EntryTypeResponse) && is_last;
-      if (sw->segment_count == sw->segment_space) {
-        SegmentLayer** new_block = bmalloc(sizeof(SegmentLayer*) * ++sw->segment_space);
-        memcpy(new_block, sw->segment_layers, sizeof(SegmentLayer*) * sw->segment_count);
-        free(sw->segment_layers);
-        sw->segment_layers = new_block;
+      if (!conv_entry || conversation_entry_get_type(conv_entry) == EntryTypeDeleted) {
+        continue;
       }
-      SegmentLayer* layer = segment_layer_create(GRect(SEGMENT_X, prv_content_height(sw), holder_size.w - SEGMENT_W_PADDING, 10), conv_entry, assistant_label);
-      sw->segment_layers[sw->segment_count++] = layer;
-      GRect frame = layer_get_frame(layer);
-      frame.origin.y = prv_content_height(sw);
-      layer_set_frame(layer, frame);
-      scroll_layer_add_child(sw->scroll_layer, layer);
-      int layer_height = layer_get_frame(layer).size.h;
-      sw->content_height += layer_height;
+      bool is_last = (i == end - 1);
+      bool assistant_label = (conversation_entry_get_type(conv_entry) == EntryTypeResponse) && is_last;
+      if (!prv_append_segment(sw, conv_entry, assistant_label)) {
+        break;
+      }
     }
     prv_set_scroll_height(sw);
     GSize content_size = scroll_layer_get_content_size(sw->scroll_layer);
@@ -316,6 +387,63 @@ static void prv_window_unload(Window *window) {
   SessionWindow *sw = (SessionWindow *)window_get_user_data(window);
   window_set_user_data(window, (void*)0);
   prv_destroy(sw);
+}
+
+static bool prv_reserve_segment_slot(SessionWindow* sw) {
+  if (sw->segment_count < sw->segment_space) {
+    return true;
+  }
+  if (sw->segments_deleted > 0) {
+    // Reuse the slots of segments deleted from the top.
+    int shift = sw->segments_deleted;
+    memmove(sw->segment_layers, sw->segment_layers + shift, sizeof(SegmentLayer*) * (sw->segment_count - shift));
+    sw->segment_count -= shift;
+    sw->segments_deleted = 0;
+    return true;
+  }
+  int new_space = sw->segment_space + 4;
+  SegmentLayer** new_block = bmalloc(sizeof(SegmentLayer*) * new_space);
+  if (!new_block) {
+    return false;
+  }
+  // bmalloc may have run the memory pressure handler, which can delete
+  // segments from the top; copy the table as it is now.
+  memcpy(new_block, sw->segment_layers, sizeof(SegmentLayer*) * sw->segment_count);
+  free(sw->segment_layers);
+  sw->segment_layers = new_block;
+  sw->segment_space = new_space;
+  return true;
+}
+
+// Creates a segment for entry at the bottom of the scroll layer. On failure
+// (out of memory) the entry simply isn't shown.
+static bool prv_append_segment(SessionWindow* sw, ConversationEntry* entry, bool assistant_label) {
+  if (!prv_reserve_segment_slot(sw)) {
+    SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Out of memory: can't show conversation entry.");
+    return false;
+  }
+  GSize holder_size = scroll_layer_get_content_size(sw->scroll_layer);
+  SegmentLayer* layer = segment_layer_create(GRect(SEGMENT_X, prv_content_height(sw), holder_size.w - SEGMENT_W_PADDING, 10), entry, assistant_label);
+  if (!layer) {
+    SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Out of memory: can't show conversation entry.");
+    return false;
+  }
+  // Creating the layer may have run the memory pressure handler and shifted
+  // the table; make sure there's still a free slot.
+  if (sw->segment_count >= sw->segment_space && !prv_reserve_segment_slot(sw)) {
+    segment_layer_destroy(layer);
+    return false;
+  }
+  sw->segment_layers[sw->segment_count++] = layer;
+  // It's possible that the content height changed *while the layer was being created*. In case this happened, move the
+  // layer back to where it should be. Because segment layers are expected to adjust their own frame during
+  // construction, we must read its size back first.
+  GRect frame = layer_get_frame(layer);
+  frame.origin.y = prv_content_height(sw);
+  layer_set_frame(layer, frame);
+  scroll_layer_add_child(sw->scroll_layer, layer);
+  sw->content_height += layer_get_frame(layer).size.h;
+  return true;
 }
 
 static void prv_dictation_status_callback(DictationSession *session, DictationSessionStatus status, char *transcript, void *context) {
@@ -372,6 +500,9 @@ static void prv_update_thinking_layer(SessionWindow* sw) {
   GSize holder_size = scroll_layer_get_content_size(sw->scroll_layer);
   if (!sw->thinking_layer) {
     sw->thinking_layer = thinking_layer_create(GRect((holder_size.w - THINKING_LAYER_WIDTH) / 2, sw->content_height + 5, THINKING_LAYER_WIDTH, THINKING_LAYER_HEIGHT));
+    if (!sw->thinking_layer) {
+      return;
+    }
     scroll_layer_add_child(sw->scroll_layer, sw->thinking_layer);
     sw->content_height += THINKING_LAYER_HEIGHT + 5;
     return;
@@ -391,9 +522,12 @@ static int16_t prv_content_height(const SessionWindow* sw) {
 
 static void prv_conversation_manager_handler(bool entry_added, void* context) {
   SessionWindow* sw = context;
-  GSize holder_size = scroll_layer_get_content_size(sw->scroll_layer);
   if (!entry_added) {
-    if (sw->segment_count > sw->segments_deleted) {
+    Conversation *conv = conversation_manager_get_conversation(sw->manager);
+    // If we couldn't create a segment for the newest entry (out of memory),
+    // don't update some older entry's segment in its place.
+    if (sw->segment_count > sw->segments_deleted &&
+        segment_layer_get_entry(sw->segment_layers[sw->segment_count-1]) == conversation_peek(conv)) {
       SegmentLayer *layer = sw->segment_layers[sw->segment_count-1];
       int old_height = layer_get_frame(layer).size.h;
       segment_layer_update(layer);
@@ -436,24 +570,12 @@ static void prv_conversation_manager_handler(bool entry_added, void* context) {
     SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "We were told a new entry was added, but no entries actually exist????");
     return;
   }
-  if (sw->segment_count == sw->segment_space) {
-    // make room for a new segment
-    SegmentLayer** new_block = bmalloc(sizeof(SegmentLayer*) * ++sw->segment_space);
-    memcpy(new_block, sw->segment_layers, sizeof(SegmentLayer*) * sw->segment_count);
-    free(sw->segment_layers);
-    sw->segment_layers = new_block;
+  if (!prv_append_segment(sw, entry, conversation_assistant_just_started(conversation))) {
+    // Can't show it, but keep the spinner state consistent.
+    prv_update_thinking_layer(sw);
+    prv_set_scroll_height(sw);
+    return;
   }
-  SegmentLayer* layer = segment_layer_create(GRect(SEGMENT_X, prv_content_height(sw), holder_size.w - SEGMENT_W_PADDING, 10), entry, conversation_assistant_just_started(conversation));
-  sw->segment_layers[sw->segment_count++] = layer;
-  // It's possible that the content height changed *while the layer was being created*. In case this happened, move the
-  // layer back to where it should be. Because segment layers are expected to adjust their own frame during
-  // construction, we must read its size back first.
-  GRect frame = layer_get_frame(layer);
-  frame.origin.y = prv_content_height(sw);
-  layer_set_frame(layer, frame);
-  scroll_layer_add_child(sw->scroll_layer, layer);
-  int layer_height = layer_get_frame(layer).size.h;
-  sw->content_height += layer_height;
   EntryType entry_type = conversation_entry_get_type(entry);
   if (entry_type == EntryTypePrompt) {
     history_push_prompt(conversation_entry_get_prompt(entry)->prompt);
@@ -492,12 +614,15 @@ static void prv_conversation_manager_handler(bool entry_added, void* context) {
 //  scroll_layer_set_content_offset(sw->scroll_layer, GPoint(0, layer_get_frame(layer).origin.y), true);
 }
 
-static void prv_conversation_entry_deleted_handler(int index, void* context) {
-  if (index != 0) {
-    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Invalid index %d", index);
+static void prv_conversation_entry_deleted_handler(ConversationEntry* entry, void* context) {
+  SessionWindow* sw = context;
+  // Entries are deleted oldest first, so the matching segment (if the entry
+  // ever got one) is the topmost remaining segment.
+  if (sw->segments_deleted >= sw->segment_count ||
+      segment_layer_get_entry(sw->segment_layers[sw->segments_deleted]) != entry) {
+    SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Deleted entry has no segment on screen.");
     return;
   }
-  SessionWindow* sw = context;
   // We need to go through every segment that's left and shift it up by the height of the deleted segment
   SegmentLayer *to_delete = sw->segment_layers[sw->segments_deleted];
   int16_t removed_height = layer_get_frame(to_delete).size.h;
@@ -511,17 +636,29 @@ static void prv_conversation_entry_deleted_handler(int index, void* context) {
     frame.origin.y -= removed_height;
     layer_set_frame(layer, frame);
   }
+  if (sw->thinking_layer) {
+    GRect frame = layer_get_frame(sw->thinking_layer);
+    frame.origin.y -= removed_height;
+    layer_set_frame(sw->thinking_layer, frame);
+  }
   // We need to adjust the height of everything to compensate for the missing segment.
   sw->content_height -= removed_height;
+  sw->last_prompt_end_offset -= removed_height;
+  if (sw->last_prompt_end_offset < 0) {
+    sw->last_prompt_end_offset = 0;
+  }
   GPoint current_offset = scroll_layer_get_content_offset(sw->scroll_layer);
-  GPoint new_offset = GPoint(current_offset.x, current_offset.y - removed_height);
+  GPoint new_offset = GPoint(current_offset.x, current_offset.y + removed_height);
+  if (new_offset.y > 0) {
+    new_offset.y = 0;
+  }
   scroll_layer_set_content_offset(sw->scroll_layer, new_offset, false);
   GSize current_size = scroll_layer_get_content_size(sw->scroll_layer);
   GSize new_size = GSize(current_size.w, current_size.h - removed_height);
   scroll_layer_set_content_size(sw->scroll_layer, new_size);
   // We need to remove our first segment.
   layer_remove_from_parent(to_delete);
-  segment_layer_destroy(sw->segment_layers[sw->segments_deleted]);
+  segment_layer_destroy(to_delete);
   sw->segment_layers[sw->segments_deleted] = NULL;
   sw->segments_deleted++;
   SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Removed top segment; adjusted upward by %d pixels.", removed_height);
@@ -534,9 +671,9 @@ static void prv_click_config_provider(void *context) {
 
 static void prv_select_clicked(ClickRecognizerRef recognizer, void *context) {
   SessionWindow* sw = context;
-  Conversation* conv = conversation_manager_get_conversation(sw->manager);
-  ConversationEntry* entry = conversation_peek(conv);
-  if (entry && conversation_entry_get_type(entry) == EntryTypeResponse && !conversation_entry_get_response(entry)->complete) {
+  // One request at a time: wait for the current reply (or its error) first.
+  if (conversation_manager_is_request_pending(sw->manager) ||
+      !conversation_is_idle(conversation_manager_get_conversation(sw->manager))) {
     return;
   }
   prv_start_dictation(sw);
@@ -553,10 +690,14 @@ static void prv_destroy_action_menu(ActionMenu *action_menu, const ActionMenuIte
 
 static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context) {
   SessionWindow* sw = context;
-  if (!conversation_is_idle(conversation_manager_get_conversation(sw->manager))) {
+  if (conversation_manager_is_request_pending(sw->manager) ||
+      !conversation_is_idle(conversation_manager_get_conversation(sw->manager))) {
     return;
   }
   ActionMenuLevel *action_menu = baction_menu_level_create(5);
+  if (!action_menu) {
+    return;
+  }
   action_menu_level_add_action(action_menu, "\"Yes.\"", prv_action_menu_input, "Yes.");
   action_menu_level_add_action(action_menu, "\"No.\"", prv_action_menu_input, "No.");
   Conversation *conversation = conversation_manager_get_conversation(sw->manager);
@@ -569,9 +710,11 @@ static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context
     if (last_prompt != NULL) {
       ConversationPrompt *prompt = conversation_entry_get_prompt(last_prompt);
       sw->last_prompt_label = bmalloc(strlen(prompt->prompt) + 3);
-      snprintf(sw->last_prompt_label, strlen(prompt->prompt) + 3, "\"%s\"", prompt->prompt);
-      action_menu_level_add_action(action_menu, sw->last_prompt_label, prv_action_menu_input, prompt->prompt);
-      separator_index++;
+      if (sw->last_prompt_label) {
+        snprintf(sw->last_prompt_label, strlen(prompt->prompt) + 3, "\"%s\"", prompt->prompt);
+        action_menu_level_add_action(action_menu, sw->last_prompt_label, prv_action_menu_input, prompt->prompt);
+        separator_index++;
+      }
     }
   }
   action_menu_level_add_action(action_menu, "Dictate", prv_action_menu_query, NULL);
@@ -637,7 +780,8 @@ static void prv_timed_out(void *ctx) {
   sw->timeout_handle = NULL;
   // Never close while the agent is still mid-reply (or we're waiting on
   // one) — losing content is worse than staying open a little longer.
-  if (!conversation_is_idle(conversation_manager_get_conversation(sw->manager))) {
+  if (conversation_manager_is_request_pending(sw->manager) ||
+      !conversation_is_idle(conversation_manager_get_conversation(sw->manager))) {
     SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Timed out, but conversation is active; re-arming");
     prv_refresh_timeout(sw);
     return;
@@ -650,6 +794,12 @@ static void prv_start_dictation(SessionWindow *sw) {
   // Dictation needs a ridiculous amount of memory to behave properly.
   free(bmalloc(2048));
 #if !ENABLE_FEATURE_FIXED_PROMPT
+  if (!sw->dictation) {
+    if (conversation_add_error(conversation_manager_get_conversation(sw->manager), "Dictation isn't available.")) {
+      prv_conversation_manager_handler(true, sw);
+    }
+    return;
+  }
   dictation_session_start(sw->dictation);
 #else
   // skip this, just send some nonsense.

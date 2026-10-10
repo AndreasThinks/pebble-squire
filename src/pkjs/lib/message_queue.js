@@ -14,32 +14,69 @@
  * limitations under the License.
  */
 
-var MAX_BYTES_IN_FLIGHT = 400;
+// Delivers app messages to the watch strictly in order, one at a time.
+//
+// Only one message is ever in flight. A failed send is retried (with
+// backoff) while it stays at the head of the queue, so nothing behind it can
+// overtake it: CHAT_DONE can never arrive before the CHAT it follows. After
+// MAX_SEND_ATTEMPTS the message is given up on; if it belonged to a group
+// (e.g. one agent reply), the rest of that group is discarded and the
+// group's onFailed callback runs, so a reply is never shown with a hole in
+// it and presented as complete.
 
-// Transient Bluetooth hiccups are common; retry a failed send a few times
-// before giving up so a dropped CHAT fragment doesn't corrupt the visible
-// reply (or a dropped CHAT_DONE leave the watch spinning forever).
-var MAX_SEND_ATTEMPTS = 3;
-var RETRY_DELAY_MS = 250;
+// The watch requests a 5000-byte inbox (SQUIRE_APP_MESSAGE_BUFFER_SIZE in
+// src/c/converse/conversation_manager.c). A dictionary costs 1 byte, plus 7
+// bytes of header per tuple, plus the value (strings include their NUL).
+var WATCH_INBOX_BYTES = 5000;
+var DICT_HEADER_BYTES = 1;
+var TUPLE_HEADER_BYTES = 7;
+// Headroom for differences between phone apps' encodings.
+var SAFETY_MARGIN_BYTES = 64;
+var MAX_MESSAGE_BYTES = WATCH_INBOX_BYTES - SAFETY_MARGIN_BYTES;
 
-// The watch allocates SQUIRE_APP_MESSAGE_BUFFER_SIZE (5000) bytes for its
-// app-message inbox/outbox (see src/c/converse/conversation_manager.c). A
-// single app message must fit within that budget or it gets dropped, so we
-// chunk any large CHAT payload into pieces below this limit. The watch's
-// conversation layer reassembles CHAT fragments by appending them to the
-// last open response (see conversation_add_response_fragment), so splitting
-// is transparent to the UI.
-var MAX_CHAT_CHUNK_SIZE = 4000;
+// Keep individual CHAT chunks modest: every byte of a chunk must also fit in
+// the watch's heap alongside the reply it's appended to.
+var MAX_CHAT_CHUNK_BYTES = 4000;
 
-function MessageQueue() {
-    this.queue = [];
-    this.messagesInFlight = 0;
-    this.bytesInFlight = 0;
+var MAX_SEND_ATTEMPTS = 4;
+var RETRY_BASE_DELAY_MS = 250;
+// If the phone app never calls either callback, treat the send as failed.
+var SEND_TIMEOUT_MS = 15000;
+
+// Keys whose string payloads the watch reassembles across multiple app
+// messages (conversation_add_response_fragment appends CHAT fragments).
+var CHUNKABLE_KEYS = ['CHAT'];
+// Keys copied onto every chunk of a split message, so each chunk is still
+// correlated with its request.
+var STICKY_KEYS = ['REQUEST_ID'];
+
+// App messages carry strings as UTF-8. Lone surrogates can't be encoded and
+// NUL would truncate the C string, so normalise both before measuring.
+function sanitizeString(str) {
+    var out = '';
+    for (var i = 0; i < str.length; i++) {
+        var code = str.charCodeAt(i);
+        if (code === 0) {
+            continue;
+        }
+        if (code >= 0xD800 && code <= 0xDBFF) {
+            var next = i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
+            if (next >= 0xDC00 && next <= 0xDFFF) {
+                out += str.charAt(i) + str.charAt(i + 1);
+                i++;
+            } else {
+                out += '�';
+            }
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+            out += '�';
+        } else {
+            out += str.charAt(i);
+        }
+    }
+    return out;
 }
 
-// App messages carry strings as UTF-8, so budgets must be measured in UTF-8
-// bytes, not UTF-16 code units — 4000 characters of emoji or CJK text would
-// otherwise encode to far more than the watch's 5000-byte inbox.
+// UTF-8 length of a sanitized string.
 function utf8Length(str) {
     var bytes = 0;
     for (var i = 0; i < str.length; i++) {
@@ -49,7 +86,7 @@ function utf8Length(str) {
         } else if (code < 0x800) {
             bytes += 2;
         } else if (code >= 0xD800 && code <= 0xDBFF) {
-            // Lead surrogate: the pair encodes to 4 bytes.
+            // Surrogate pair (guaranteed by sanitizeString): 4 bytes.
             bytes += 4;
             i++;
         } else {
@@ -59,8 +96,8 @@ function utf8Length(str) {
     return bytes;
 }
 
-// Split a string into pieces of at most maxBytes UTF-8 bytes each, never
-// splitting a surrogate pair.
+// Split a sanitized string into pieces of at most maxBytes UTF-8 bytes each,
+// never splitting a surrogate pair.
 function chunkByUtf8Bytes(str, maxBytes) {
     var chunks = [];
     var start = 0;
@@ -94,106 +131,240 @@ function chunkByUtf8Bytes(str, maxBytes) {
     return chunks;
 }
 
-function countBytes(message) {
-    var bytes = 0;
+// Truncate a sanitized string to at most maxBytes UTF-8 bytes on a code
+// point boundary, appending an ellipsis if anything was cut.
+function truncateUtf8(str, maxBytes) {
+    if (utf8Length(str) <= maxBytes) {
+        return str;
+    }
+    var ellipsis = '…';
+    return chunkByUtf8Bytes(str, maxBytes - utf8Length(ellipsis))[0] + ellipsis;
+}
+
+function valueBytes(value) {
+    if (typeof value === 'string') {
+        return utf8Length(value) + 1;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return 4;
+    }
+    if (Array.isArray(value) || (typeof Uint8Array !== 'undefined' && value instanceof Uint8Array)) {
+        return value.length;
+    }
+    return 0;
+}
+
+// Size of the dictionary the watch will receive for message.
+function messageBytes(message) {
+    var bytes = DICT_HEADER_BYTES;
     for (var key in message) {
-        if (message.hasOwnProperty(key)) {
-            var value = message[key];
-            if (typeof value === 'string') {
-                bytes += utf8Length(value);
-            } else if (typeof value === 'number') {
-                bytes += 4; // 4 bytes for numbers
-            } else if (typeof value == 'boolean') {
-                bytes += 1; // 1 byte for boolean
-            } else if (Array.isArray(value)) {
-                bytes += value.length; // 1 byte per array element
-            } else if (value instanceof Uint8Array) {
-                bytes += value.length; // 1 byte per array element
-            }
-            bytes += 12; // space for some overhead for the key.
+        if (Object.prototype.hasOwnProperty.call(message, key)) {
+            bytes += TUPLE_HEADER_BYTES + valueBytes(message[key]);
         }
     }
     return bytes;
 }
 
-// Keys whose string payloads the watch reassembles across multiple app
-// messages. For CHAT the conversation layer appends each fragment to the
-// last open response (conversation_add_response_fragment), so a long agent
-// reply can be safely split into several smaller app messages.
-var REASSEMBLABLE_KEYS = ['CHAT'];
-
-MessageQueue.prototype.enqueue = function(message) {
-    this.queue.push(message);
-    this.pump();
+function sanitizeMessage(message) {
+    var clean = {};
+    for (var key in message) {
+        if (Object.prototype.hasOwnProperty.call(message, key)) {
+            var value = message[key];
+            clean[key] = typeof value === 'string' ? sanitizeString(value) : value;
+        }
+    }
+    return clean;
 }
 
-MessageQueue.prototype.pump = function() {
-    if (this.messagesInFlight >= 6 || this.bytesInFlight >= MAX_BYTES_IN_FLIGHT) {
-        console.log('enqueued, queue length: ' + this.queue.length + ', bytes: ' + this.bytesInFlight);
+// Splits a message whose chunkable string is too big into several messages
+// that each fit. Non-sticky keys other than the chunked one ride on the last
+// chunk, so e.g. a CHAT_DONE combined with a CHAT still comes after all of
+// the text.
+function splitMessage(message) {
+    for (var i = 0; i < CHUNKABLE_KEYS.length; i++) {
+        var key = CHUNKABLE_KEYS[i];
+        if (typeof message[key] !== 'string') {
+            continue;
+        }
+        var text = message[key];
+        var others = {};
+        var sticky = {};
+        for (var k in message) {
+            if (!Object.prototype.hasOwnProperty.call(message, k) || k === key) {
+                continue;
+            }
+            if (STICKY_KEYS.indexOf(k) !== -1) {
+                sticky[k] = message[k];
+            } else {
+                others[k] = message[k];
+            }
+        }
+        var overhead = messageBytes(merge(sticky, others)) + TUPLE_HEADER_BYTES + 1;
+        var budget = Math.min(MAX_CHAT_CHUNK_BYTES, MAX_MESSAGE_BYTES - overhead);
+        if (utf8Length(text) <= budget) {
+            return [message];
+        }
+        var chunks = chunkByUtf8Bytes(text, budget);
+        var result = [];
+        for (var c = 0; c < chunks.length; c++) {
+            var part = merge(sticky, c === chunks.length - 1 ? others : {});
+            part[key] = chunks[c];
+            result.push(part);
+        }
+        return result;
+    }
+    return [message];
+}
+
+function merge(a, b) {
+    var out = {};
+    var k;
+    for (k in a) { if (Object.prototype.hasOwnProperty.call(a, k)) out[k] = a[k]; }
+    for (k in b) { if (Object.prototype.hasOwnProperty.call(b, k)) out[k] = b[k]; }
+    return out;
+}
+
+function describe(message) {
+    // Key names and sizes only: message contents are user data.
+    return Object.keys(message).join(',') + ' (' + messageBytes(message) + ' bytes)';
+}
+
+function MessageQueue() {
+    this.reset();
+}
+
+MessageQueue.prototype.reset = function() {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.sendTimer) clearTimeout(this.sendTimer);
+    this.queue = [];
+    this.inFlight = null;
+    this.retryTimer = null;
+    this.sendTimer = null;
+    this.attemptToken = 0;
+    this.failedGroups = {};
+};
+
+// options.group: messages sharing a group are one logical unit (e.g. one
+//   agent reply). If any of them can't be delivered, the rest are dropped
+//   and options.onFailed(group) is called once.
+// options.terminal: the message reports a failure itself; if it fails too,
+//   nothing more is attempted for the group.
+MessageQueue.prototype.enqueue = function(message, options) {
+    options = options || {};
+    var group = options.group !== undefined ? options.group : null;
+    if (group !== null && this.failedGroups[group] && !options.terminal) {
         return;
     }
-    var message = this.queue.shift();
-    if (!message) return;
-
-    var self = this;
-    function send(msg, attempt) {
-        attempt = attempt || 1;
-        var mSize = countBytes(msg);
-        if (mSize > 5000) {
-            console.warn('message exceeds 5000-byte watch inbox limit (' + mSize + ' bytes), will likely be dropped');
+    var parts = splitMessage(sanitizeMessage(message));
+    for (var i = 0; i < parts.length; i++) {
+        var item = {
+            message: parts[i],
+            group: group,
+            terminal: !!options.terminal,
+            onFailed: options.onFailed || null,
+            attempts: 0
+        };
+        if (messageBytes(item.message) > MAX_MESSAGE_BYTES) {
+            // Can't be split and would just be dropped by the watch.
+            console.error('[queue] message too large for the watch: ' + describe(item.message));
+            this.failItem(item);
+            continue;
         }
-        console.log('sending message, remaining: ' + self.queue.length + ', bytes in flight: ' + self.bytesInFlight);
-        self.messagesInFlight++;
-        self.bytesInFlight += mSize;
-        Pebble.sendAppMessage(msg, (function() {
-            self.messagesInFlight--;
-            self.bytesInFlight -= mSize;
-            console.log('sent successfully');
-            if (self.queue.length > 0) {
-                if (self.bytesInFlight > MAX_BYTES_IN_FLIGHT) {
-                    console.log('still too many bytes in flight (' + self.bytesInFlight + '), waiting');
-                } else {
-                    self.pump();
-                }
-            } else {
-                console.log('done');
-            }
-        }).bind(self), (function() {
-            self.messagesInFlight--;
-            self.bytesInFlight -= mSize;
-            if (attempt < MAX_SEND_ATTEMPTS) {
-                var delay = RETRY_DELAY_MS * attempt;
-                console.log('send failed, retrying in ' + delay + 'ms (attempt ' + attempt + '/' + MAX_SEND_ATTEMPTS + ')');
-                setTimeout(function() { send(msg, attempt + 1); }, delay);
-                return;
-            }
-            console.log('failed after ' + attempt + ' attempts, message lost. carrying on shortly.');
-            if (self.queue.length > 0) {
-                setTimeout(function() { self.pump(); }, 10);
-            } else {
-                console.log('done');
-            }
-        }).bind(self));
+        this.queue.push(item);
     }
+    this.pump();
+};
 
-    // Split oversized reassemblable payloads into chunks the watch can accept.
-    for (var i = 0; i < REASSEMBLABLE_KEYS.length; i++) {
-        var key = REASSEMBLABLE_KEYS[i];
-        if (message.hasOwnProperty(key) && typeof message[key] === 'string' &&
-            utf8Length(message[key]) > MAX_CHAT_CHUNK_SIZE) {
-            var full = message[key];
-            var chunks = chunkByUtf8Bytes(full, MAX_CHAT_CHUNK_SIZE);
-            console.log('chunking ' + key + ' (' + utf8Length(full) + ' bytes) into ' + chunks.length + ' pieces');
-            // unshift in reverse so they come off the front in order.
-            for (var c = chunks.length - 1; c >= 0; c--) {
-                this.queue.unshift({ CHAT: chunks[c] });
-            }
-            this.pump();
+// Drops queued (not yet in-flight) messages of a group, e.g. when a request
+// is cancelled.
+MessageQueue.prototype.purgeGroup = function(group) {
+    this.queue = this.queue.filter(function(item) {
+        return item.group !== group || item === this.inFlight;
+    }, this);
+};
+
+MessageQueue.prototype.size = function() {
+    return this.queue.length;
+};
+
+MessageQueue.prototype.pump = function() {
+    if (this.inFlight || this.retryTimer || this.queue.length === 0) {
+        return;
+    }
+    var item = this.queue[0];
+    this.inFlight = item;
+    item.attempts++;
+    var token = ++this.attemptToken;
+    var self = this;
+    var settled = false;
+    function settle(ok) {
+        if (settled || token !== self.attemptToken) {
             return;
         }
+        settled = true;
+        clearTimeout(self.sendTimer);
+        self.sendTimer = null;
+        self.inFlight = null;
+        if (ok) {
+            self.queue.shift();
+            self.pump();
+        } else {
+            self.handleFailure(item);
+        }
     }
+    this.sendTimer = setTimeout(function() {
+        console.warn('[queue] send timed out: ' + describe(item.message));
+        settle(false);
+    }, SEND_TIMEOUT_MS);
+    try {
+        Pebble.sendAppMessage(item.message, function() { settle(true); }, function() { settle(false); });
+    } catch (err) {
+        console.error('[queue] sendAppMessage threw: ' + (err && err.message));
+        settle(false);
+    }
+};
 
-    send(message);
-}
+MessageQueue.prototype.handleFailure = function(item) {
+    var self = this;
+    if (item.attempts < MAX_SEND_ATTEMPTS) {
+        var delay = RETRY_BASE_DELAY_MS * Math.pow(2, item.attempts - 1);
+        console.log('[queue] send failed, retrying in ' + delay + 'ms (attempt ' + item.attempts + '/' + MAX_SEND_ATTEMPTS + ')');
+        // The item stays at the head of the queue: nothing overtakes it.
+        this.retryTimer = setTimeout(function() {
+            self.retryTimer = null;
+            self.pump();
+        }, delay);
+        return;
+    }
+    console.error('[queue] giving up after ' + item.attempts + ' attempts: ' + describe(item.message));
+    this.queue.shift();
+    this.failItem(item);
+    this.pump();
+};
+
+MessageQueue.prototype.failItem = function(item) {
+    if (item.group === null || item.terminal) {
+        return;
+    }
+    if (this.failedGroups[item.group]) {
+        return;
+    }
+    this.failedGroups[item.group] = true;
+    this.purgeGroup(item.group);
+    if (item.onFailed) {
+        try {
+            item.onFailed(item.group);
+        } catch (err) {
+            console.error('[queue] onFailed threw: ' + (err && err.message));
+        }
+    }
+};
 
 exports.Queue = new MessageQueue();
+exports.MessageQueue = MessageQueue;
+exports.utf8Length = function(str) { return utf8Length(sanitizeString(str)); };
+exports.truncateUtf8 = function(str, maxBytes) { return truncateUtf8(sanitizeString(str), maxBytes); };
+exports.messageBytes = messageBytes;
+exports.sanitizeString = sanitizeString;
+exports.MAX_MESSAGE_BYTES = MAX_MESSAGE_BYTES;
+exports.MAX_SEND_ATTEMPTS = MAX_SEND_ATTEMPTS;

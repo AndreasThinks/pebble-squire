@@ -38,9 +38,17 @@ static int prv_get_content_height(MessageLayer* layer);
 
 MessageLayer* message_layer_create(GRect rect, ConversationEntry* entry) {
     Layer* layer = blayer_create_with_data(rect, sizeof(MessageLayerData));
+    if (!layer) {
+      return NULL;
+    }
     MessageLayerData* data = layer_get_data(layer);
     data->entry = entry;
+  data->content_layer = NULL;
   data->speaker_layer = btext_layer_create(GRect(5, 0, rect.size.w, NAME_HEIGHT));
+  if (!data->speaker_layer) {
+    layer_destroy(layer);
+    return NULL;
+  }
   size_t content_origin_y = -5;
   EntryType type = conversation_entry_get_type(entry);
   if (type == EntryTypePrompt) {
@@ -55,6 +63,11 @@ MessageLayer* message_layer_create(GRect rect, ConversationEntry* entry) {
     data->content_height = 24;
     data->content_height = prv_get_content_height(layer);
     data->content_layer = btext_layer_create(GRect(5, content_origin_y, rect.size.w - 10, data->content_height));
+    if (!data->content_layer) {
+      text_layer_destroy(data->speaker_layer);
+      layer_destroy(layer);
+      return NULL;
+    }
     text_layer_set_text(data->content_layer, prv_get_content_text(layer));
     text_layer_set_font(data->content_layer, fonts_get_system_font(CONTENT_FONT));
 #ifdef PBL_PLATFORM_GABBRO
@@ -135,6 +148,10 @@ static int prv_get_content_height(MessageLayer* layer) {
     // the middle of it (even transiently) violates the buffer's invariant. We also start at
     // len-1 so we never touch the terminator at index len.
     char *scratch = bmalloc(len + 1);
+    if (!scratch) {
+      // Not enough memory to find the line break; measure the whole thing.
+      return graphics_text_layout_get_content_size(text, font, rect, GTextOverflowModeTrailingEllipsis, alignment).h;
+    }
     memcpy(scratch, text + offset, len + 1);
     for (int i = (int)len - 1; i >= 0; --i) {
       scratch[i] = 0;

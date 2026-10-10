@@ -18,230 +18,251 @@
  * Telegram client using GramJS for direct MTProto communication.
  * This eliminates the need for a backend server - all Telegram communication
  * happens directly from the phone app.
+ *
+ * Exactly one connected client exists at a time: concurrent initClient()
+ * calls share one connection attempt, and replaced clients are torn down.
+ * Two live connections on the same auth key make Telegram revoke it
+ * (AUTH_KEY_DUPLICATED), which signs the user out.
  */
 
+var bundleLoader = require('../lib/bundle_loader');
+var messageQueue = require('../lib/message_queue').Queue;
+var appConfig = require('./app_config');
 var session = require('./session');
 
-// Client instance
+var CONNECT_TIMEOUT_MS = 30000;
+
 var client = null;
 var isConnected = false;
-var currentUser = null;
+var connecting = null;
+
+var CLIENT_OPTIONS = {
+    connectionRetries: 5,
+    deviceModel: 'Squire',
+    systemVersion: '1.0',
+    appVersion: '1.0'
+};
+
+function telegramGlobals() {
+    bundleLoader.ensureTelegramBundle();
+    if (typeof TelegramClient === 'undefined' || typeof StringSession === 'undefined') {
+        throw new Error('Telegram client library failed to load.');
+    }
+    return { TelegramClient: TelegramClient, StringSession: StringSession };
+}
 
 /**
- * Initialize the Telegram client.
- * @returns {Promise<boolean>} True if successfully initialized
+ * Creates (but doesn't connect) a client for sessionString ('' for a fresh
+ * auth key). Throws APP_NOT_CONFIGURED if the build has no API credentials.
  */
-function initClient() {
-    console.log('[client] initClient called, client: ' + (client ? (client.connected ? 'connected' : 'disconnected') : 'null'));
-    if (client && client.connected) {
-        console.log('[client] Reusing existing connected client');
-        return Promise.resolve(true);
+function createClient(sessionString) {
+    var creds = appConfig.getCredentials();
+    var g = telegramGlobals();
+    var options = {};
+    for (var k in CLIENT_OPTIONS) {
+        options[k] = CLIENT_OPTIONS[k];
     }
+    return new g.TelegramClient(new g.StringSession(sessionString || ''), creds.apiId, creds.apiHash, options);
+}
 
+/**
+ * Best-effort teardown of a client: closes the connection and stops its
+ * update loop. Never rejects.
+ */
+function destroyClient(c) {
+    if (!c) {
+        return Promise.resolve();
+    }
+    var closing;
+    try {
+        closing = typeof c.destroy === 'function' ? c.destroy() : c.disconnect();
+    } catch (err) {
+        closing = Promise.reject(err);
+    }
+    return Promise.resolve(closing).catch(function(err) {
+        console.log('[client] Error closing client: ' + (err && (err.errorMessage || err.message)));
+    });
+}
+
+function notifyWatchDisconnected() {
+    messageQueue.enqueue({ TELEGRAM_CONNECTED: 0 });
+}
+
+function forgetInvalidSession(reason) {
+    console.error('[client] Stored session rejected by Telegram (' + reason + '); clearing it');
+    var old = client;
+    client = null;
+    isConnected = false;
+    destroyClient(old);
+    session.clearSession();
+    notifyWatchDisconnected();
+}
+
+function connectNewClient() {
+    var storedSession = session.loadSession();
+    if (!storedSession) {
+        return Promise.reject(new Error('No Telegram session available'));
+    }
+    var newClient;
+    try {
+        newClient = createClient(storedSession);
+    } catch (err) {
+        return Promise.reject(err);
+    }
     return new Promise(function(resolve, reject) {
-        try {
-            var storedSession = session.loadSession();
-            console.log('[client] Stored session: ' + (storedSession ? 'present (length: ' + storedSession.length + ')' : 'none'));
-
-            if (typeof TelegramClient !== 'undefined') {
-                console.log('[client] GramJS available, creating TelegramClient...');
-                var apiId = parseInt(process.env.TELEGRAM_APP_ID, 10);
-                var apiHash = process.env.TELEGRAM_APP_HASH || '';
-                if (!apiId || !apiHash) {
-                    console.error('[client] TELEGRAM_APP_ID or TELEGRAM_APP_HASH not set! apiId: ' + apiId + ', apiHash length: ' + apiHash.length);
-                }
-                var stringSession = new StringSession(storedSession || '');
-                client = new TelegramClient(stringSession, apiId || 0, apiHash, {
-                    connectionRetries: 5,
-                    deviceModel: 'Squire',
-                    systemVersion: '1.0',
-                    appVersion: '1.0',
-                });
-
-                console.log('[client] Calling client.connect()...');
-                var connectTimeout = setTimeout(function() {
-                    console.error('[client] Connection timed out after 30s');
-                    reject(new Error('Connection to Telegram timed out'));
-                }, 30000);
-                var authCheckDone = false;
-                client.connect().then(function() {
-                    clearTimeout(connectTimeout);
-                    if (!client.connected) {
-                        console.error('[client] connect() resolved but client.connected is false');
-                        isConnected = false;
-                        reject(new Error('Failed to connect to Telegram (not connected after retries)'));
-                        return null;
-                    }
-                    isConnected = true;
-                    console.log('[client] Telegram client connected successfully');
-                    console.log('[client] Client details - connected: ' + client.connected + ', session DC: ' + (client.session && client.session.dcId ? client.session.dcId : 'unknown'));
-                    if (typeof NewMessage !== 'undefined') {
-                        try {
-                            client.addEventHandler(function(event) {
-                                try {
-                                    var msg = event.message;
-                                    if (!msg || !msg.message) return;
-                                    console.log('[client] global raw message out=', msg.out, 'id=', msg.id, 'text=', msg.message.substring(0, 50));
-                                } catch (err) {
-                                    console.error('[client] Error in global message handler:', err);
-                                }
-                            }, new NewMessage({}));
-                            console.log('[client] Global NewMessage event handler registered');
-                        } catch (err) {
-                            console.error('[client] Failed to register global NewMessage handler:', err);
-                        }
-                    } else {
-                        console.log('[client] NewMessage not available for global handler');
-                    }
-                    return storedSession ? client.isUserAuthorized() : null;
-                }).then(function(authorized) {
-                    if (authCheckDone) return;
-                    authCheckDone = true;
-                    if (authorized === null || authorized === undefined) {
-                        console.log('[client] No stored session, proceeding (auth will be needed)');
-                        resolve(true);
-                        return;
-                    }
-                    if (!authorized) {
-                        console.error('[client] Client connected but NOT authorized (stored session may be invalid)');
-                        isConnected = false;
-                        client = null;
-                        session.clearSession();
-
-                        try { Pebble.sendAppMessage({TELEGRAM_CONNECTED: 0}); } catch(e) {}
-                        reject(new Error('Telegram session expired. Please re-authenticate.'));
-                        return;
-                    }
-                    console.log('[client] Client is authorized');
-                    resolve(true);
-                }).catch(function(err) {
-                    clearTimeout(connectTimeout);
-                    var errorMsg = (err.message || err || '').toString();
-                    console.error('[client] Failed to connect to Telegram: ' + errorMsg);
-                    console.error('[client] Error stack: ' + (err.stack || 'no stack'));
-                    if (errorMsg.indexOf('AUTH_KEY_DUPLICATED') !== -1 || errorMsg.indexOf('AUTH_KEY_UNREGISTERED') !== -1) {
-                        console.log('[client] Session key invalid, clearing session for re-auth');
-                        session.clearSession();
-
-                        isConnected = false;
-                        client = null;
-                        try { Pebble.sendAppMessage({TELEGRAM_CONNECTED: 0}); } catch(e) {}
-                        reject(new Error('Telegram session expired. Please re-authenticate.'));
-                        return;
-                    }
-                    if (errorMsg.indexOf('re-authenticate') !== -1 || errorMsg.indexOf('session expired') !== -1) {
-                        console.log('[client] Clearing invalid session');
-                        session.clearSession();
-
-                        isConnected = false;
-                        client = null;
-                        try { Pebble.sendAppMessage({TELEGRAM_CONNECTED: 0}); } catch(e) {}
-                    }
-                    reject(err);
-                });
-            } else {
-                console.log('[client] GramJS not loaded, checking for stored session...');
-                if (storedSession) {
-                    console.log('[client] Using stored session (GramJS unavailable)');
-                    isConnected = true;
-                    resolve(true);
-                } else {
-                    console.error('[client] No session available and GramJS not loaded');
-                    reject(new Error('No Telegram session available'));
-                }
+        var timedOut = false;
+        var timer = setTimeout(function() {
+            timedOut = true;
+            console.error('[client] Connection timed out after ' + (CONNECT_TIMEOUT_MS / 1000) + 's');
+            destroyClient(newClient);
+            reject(new Error('Connection to Telegram timed out'));
+        }, CONNECT_TIMEOUT_MS);
+        Promise.resolve(newClient.connect()).then(function() {
+            if (timedOut) return null;
+            if (!newClient.connected) {
+                throw new Error('Failed to connect to Telegram (not connected after retries)');
             }
-        } catch (err) {
-            console.error('[client] Error initializing Telegram client: ' + (err.message || err));
+            return newClient.isUserAuthorized();
+        }).then(function(authorized) {
+            if (timedOut) return;
+            clearTimeout(timer);
+            if (!authorized) {
+                client = newClient;
+                forgetInvalidSession('not authorized');
+                reject(new Error('Telegram session expired. Please re-authenticate.'));
+                return;
+            }
+            client = newClient;
+            isConnected = true;
+            console.log('[client] Telegram client connected');
+            resolve(true);
+        }).catch(function(err) {
+            if (timedOut) return;
+            clearTimeout(timer);
+            var errorMsg = String((err && (err.errorMessage || err.message)) || err);
+            console.error('[client] Failed to connect to Telegram: ' + errorMsg);
+            if (errorMsg.indexOf('AUTH_KEY_DUPLICATED') !== -1 ||
+                errorMsg.indexOf('AUTH_KEY_UNREGISTERED') !== -1 ||
+                errorMsg.indexOf('SESSION_REVOKED') !== -1 ||
+                errorMsg.indexOf('USER_DEACTIVATED') !== -1) {
+                client = newClient;
+                forgetInvalidSession(errorMsg);
+                reject(new Error('Telegram session expired. Please re-authenticate.'));
+                return;
+            }
+            destroyClient(newClient);
             reject(err);
-        }
+        });
     });
 }
 
 /**
- * Check if client is connected.
- * @returns {boolean}
+ * Connects the shared client using the stored session.
+ * @returns {Promise<boolean>} resolves true once connected and authorized.
  */
+function initClient() {
+    if (client && client.connected && isConnected) {
+        return Promise.resolve(true);
+    }
+    if (connecting) {
+        return connecting;
+    }
+    var stale = client;
+    client = null;
+    isConnected = false;
+    destroyClient(stale);
+    connecting = connectNewClient().then(function(result) {
+        connecting = null;
+        return result;
+    }, function(err) {
+        connecting = null;
+        throw err;
+    });
+    return connecting;
+}
+
 function isClientConnected() {
     return isConnected && client !== null;
 }
 
-/**
- * Get current user info.
- * @returns {object|null}
- */
 function getCurrentUser() {
-    return currentUser;
+    return null;
 }
 
 /**
- * Disconnect from Telegram.
- * @returns {Promise<void>}
+ * Signs out: revokes the session on Telegram's servers if we can reach them,
+ * and always deletes the local copy.
+ * @returns {Promise<{revoked: boolean}>} revoked is false if only the local
+ *   copy was deleted (the session may still be listed under Telegram >
+ *   Settings > Devices).
  */
 function disconnect() {
-    console.log('[client] disconnect called, client: ' + (client ? 'present' : 'null'));
-    return new Promise(function(resolve, reject) {
-        if (client) {
-            // Best-effort server-side revocation: without auth.LogOut the
-            // session key stays valid on Telegram's side even though we've
-            // deleted our local copy of it.
-            var revoke = Promise.resolve();
-            if (client.connected && typeof TelegramApi !== 'undefined') {
-                revoke = client.invoke(new TelegramApi.auth.LogOut()).then(function() {
-                    console.log('[client] Session revoked server-side');
-                }).catch(function(err) {
-                    console.error('[client] auth.LogOut failed: ' + (err.errorMessage || err.message || err) + ' — continuing with local sign-out');
-                });
-            }
-            revoke.then(function() {
-                return client.disconnect();
-            }).then(function() {
-                console.log('[client] Disconnected successfully');
-            }).catch(function(err) {
-                console.error('[client] Disconnect failed: ' + (err.message || err) + ' — clearing local state anyway');
-            }).then(function() {
-                isConnected = false;
-                client = null;
-                currentUser = null;
-                session.clearSession();
-                resolve();
-            });
-        } else {
-            console.log('[client] No client to disconnect, clearing session');
-            isConnected = false;
-            session.clearSession();
-            resolve();
+    var current = client;
+    var prep = Promise.resolve(false);
+    if (!(current && current.connected) && session.hasSession() && appConfig.isConfigured()) {
+        prep = initClient().then(function() { return true; }, function(err) {
+            console.log('[client] Could not connect for server-side logout: ' + (err && err.message));
+            return false;
+        });
+    }
+    return prep.then(function() {
+        current = client;
+        if (!current || !current.connected || typeof TelegramApi === 'undefined') {
+            return false;
         }
+        return Promise.resolve(current.invoke(new TelegramApi.auth.LogOut())).then(function() {
+            console.log('[client] Session revoked server-side');
+            return true;
+        }, function(err) {
+            console.error('[client] auth.LogOut failed: ' + (err && (err.errorMessage || err.message)) + ' - signing out locally only');
+            return false;
+        });
+    }).then(function(revoked) {
+        var old = client;
+        client = null;
+        isConnected = false;
+        session.clearSession();
+        return destroyClient(old).then(function() {
+            return { revoked: revoked };
+        });
     });
 }
 
-/**
- * Get the client instance.
- * @returns {object|null}
- */
 function getClient() {
-    if (!client) {
-        console.log('[client] getClient called but client is null');
-    }
     return client;
 }
 
-// For GramJS compatibility, export these
-exports.StringSession = typeof StringSession !== 'undefined' ? StringSession : function(sessionStr) {
-    this.sessionStr = sessionStr || '';
-    this.save = function() {
-        return this.sessionStr;
+/**
+ * Event builder classes from the bundle. EditedMessage is only present in
+ * bundles built by scripts/build-gramjs.js; callers fall back to Raw.
+ */
+function getEventBuilders() {
+    bundleLoader.ensureTelegramBundle();
+    return {
+        NewMessage: typeof NewMessage !== 'undefined' ? NewMessage : null,
+        Raw: typeof Raw !== 'undefined' ? Raw : null,
+        EditedMessage: typeof EditedMessage !== 'undefined' ? EditedMessage : null
     };
-};
+}
 
+/**
+ * Drops the current client (e.g. after signing in with a new session) so the
+ * next initClient() connects with the stored session.
+ */
 function resetClient() {
-    console.log('[client] Resetting client — will reconnect with new session');
+    console.log('[client] Resetting client - will reconnect with stored session');
+    var old = client;
     client = null;
     isConnected = false;
+    return destroyClient(old);
 }
 
 exports.initClient = initClient;
+exports.createClient = createClient;
+exports.destroyClient = destroyClient;
 exports.isClientConnected = isClientConnected;
 exports.getCurrentUser = getCurrentUser;
 exports.disconnect = disconnect;
 exports.getClient = getClient;
+exports.getEventBuilders = getEventBuilders;
 exports.resetClient = resetClient;

@@ -67,8 +67,13 @@
                 "id": "backendBot",
                 "messageKey": "AGENT_TELEGRAM_USERNAME",
                 "label": "Agent Bot Username",
-                "description": "Enter the username of your OpenClaw or Hermes bot (e.g., @MyOpenClawBot or @MyHermesBot). OpenClaw and Hermes are both supported.",
-                "defaultValue": "@MyAgentBot"
+                "description": "Enter the username of your OpenClaw or Hermes bot (e.g., @MyOpenClawBot or @MyHermesBot). It must be a Telegram bot account; Squire won't send prompts until this is set.",
+                "defaultValue": "",
+                "attributes": {
+                    "placeholder": "@MyHermesBot",
+                    "autocapitalize": "off",
+                    "autocorrect": "off"
+                }
             }
         ]
     },
@@ -83,7 +88,7 @@
                 "type": "text",
                 "id": "telegramSignInInstructions",
                 "label": "",
-                "defaultValue": "To sign in from this page: enter your phone number and press Save. Telegram will send you a login code; reopen this page, enter the code (and your two-step verification password if you have one), and press Save again. These fields are cleared after each attempt and are never stored."
+                "defaultValue": "To sign in from this page: enter your phone number and press Save. Telegram will send you a login code; within 15 minutes, reopen this page, enter the code (and your two-step verification password if you have one), and press Save again. The code and password are never stored; the phone number is kept only until sign-in finishes or the attempt expires."
             },
             {
                 "type": "input",

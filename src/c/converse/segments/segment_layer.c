@@ -53,12 +53,20 @@ static SegmentType prv_get_segment_type(ConversationEntry* entry);
 
 SegmentLayer* segment_layer_create(GRect rect, ConversationEntry* entry, bool assistant_label) {
   Layer* layer = blayer_create_with_data(rect, sizeof(SegmentLayerData));
+  if (!layer) {
+    return NULL;
+  }
   SegmentLayerData* data = layer_get_data(layer);
   data->entry = entry;
   data->type = prv_get_segment_type(entry);
+  data->layer = NULL;
   GRect child_frame = GRect(0, 0, rect.size.w, rect.size.h);
   if (assistant_label) {
     data->assistant_label_layer = btext_layer_create(GRect(5, 0, rect.size.w, NAME_HEIGHT));
+    if (!data->assistant_label_layer) {
+      layer_destroy(layer);
+      return NULL;
+    }
     layer_add_child(layer, text_layer_get_layer(data->assistant_label_layer));
     text_layer_set_text(data->assistant_label_layer, "Squire");
 #ifdef PBL_PLATFORM_GABBRO
@@ -77,6 +85,14 @@ SegmentLayer* segment_layer_create(GRect rect, ConversationEntry* entry, bool as
     case SegmentTypeInfo:
       data->info_layer = info_layer_create(child_frame, entry);
       break;
+  }
+  if (!data->layer) {
+    // Out of memory (or an entry type with nothing to show).
+    if (data->assistant_label_layer) {
+      text_layer_destroy(data->assistant_label_layer);
+    }
+    layer_destroy(layer);
+    return NULL;
   }
   layer_add_child(layer, data->layer);
   GSize child_size = layer_get_frame(data->layer).size;

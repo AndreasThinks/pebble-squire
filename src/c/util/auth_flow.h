@@ -21,8 +21,25 @@
 
 typedef void (*AuthFlowCompleteCallback)(bool success, const char* agent_username);
 
+// Reasons sent by the phone as the value of TELEGRAM_AUTH_ERROR. Keep in sync
+// with AUTH_ERROR_REASONS in src/pkjs/telegram/auth.js.
+typedef enum {
+  AuthErrorGeneric = 1,
+  AuthErrorInvalidPhone = 2,
+  AuthErrorInvalidCode = 3,
+  AuthErrorCodeExpired = 4,
+  AuthErrorFloodWait = 5,
+  AuthErrorBadPassword = 6,
+  AuthErrorNoPendingSignIn = 7,
+  AuthErrorAppNotConfigured = 8,
+  AuthErrorNetwork = 9,
+  AuthErrorNoAccount = 10,
+} AuthErrorReason;
+
 void auth_flow_start(AuthFlowCompleteCallback callback);
-void auth_flow_handle_message(uint32_t key, const char* value);
+// value is the string payload (agent username for TELEGRAM_CONNECTED),
+// number the integer payload (code length, error reason, ...).
+void auth_flow_handle_message(uint32_t key, const char* value, int32_t number);
 void auth_flow_cancel(void);
 
 #endif // AUTH_FLOW_H
