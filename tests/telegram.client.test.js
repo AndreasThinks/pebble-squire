@@ -12,7 +12,7 @@ describe('Telegram client lifecycle', () => {
     beforeEach(async () => {
         localStorage.clear();
         sent = [];
-        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(msg); ok(); });
+        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(stripSeq(msg)); ok(); });
         Queue.reset();
         gram = fake.install(vi, {});
         await client.resetClient();

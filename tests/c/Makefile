@@ -12,7 +12,8 @@ SOURCES := test_watch.c stubs/pebble_stubs.c \
            $(SRC)/util/memory/malloc.c \
            $(SRC)/util/memory/pressure.c \
            $(SRC)/util/strings.c \
-           $(SRC)/util/tuple_util.c
+           $(SRC)/util/tuple_util.c \
+           $(SRC)/util/transport.c
 
 BUILD := build
 

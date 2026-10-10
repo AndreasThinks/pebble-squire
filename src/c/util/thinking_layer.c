@@ -19,86 +19,119 @@
 #include <pebble.h>
 
 #include "memory/sdk.h"
+#include "style.h"
 
-//#define CIRCLE_MAX_RADIUS 15
-//#define CIRCLE_MIN_RADIUS 8
-
-static void prv_animation_update(Animation* animation, const AnimationProgress progress);
-static void prv_layer_render(Layer* layer, GContext* ctx);
-int prv_progress_to_radius(AnimationProgress progress, int section, int max_radius);
-
-static AnimationImplementation s_animation_implementation;
+#define STEP_MS 400
 
 typedef struct {
-  Animation *animation;
-  AnimationProgress progress;
+  AppTimer *timer;
+  uint8_t step;
+  GColor color;
+  const char *hint;
 } ThinkingLayerData;
 
+static void prv_layer_render(Layer* layer, GContext* ctx);
+static void prv_step(void *context);
+
 ThinkingLayer* thinking_layer_create(GRect rect) {
-  if (s_animation_implementation.update == NULL) {
-    s_animation_implementation = (AnimationImplementation){
-        .update = prv_animation_update
-    };
-  }
-  
   ThinkingLayer* layer = blayer_create_with_data(rect, sizeof(ThinkingLayerData));
   if (!layer) {
     return NULL;
   }
   ThinkingLayerData* data = layer_get_data(layer);
-  data->progress = 0;
-  data->animation = animation_create();
-  if (!data->animation) {
-    layer_destroy(layer);
-    return NULL;
-  }
-  animation_set_curve(data->animation, AnimationCurveLinear);
-  animation_set_duration(data->animation, 1500);
-  animation_set_play_count(data->animation, ANIMATION_PLAY_COUNT_INFINITE);
-  animation_set_handlers(data->animation, (AnimationHandlers){
-                                              .started = NULL,
-                                              .stopped = NULL,
-}, layer);
-  animation_set_implementation(data->animation, &s_animation_implementation);
+  data->step = 0;
+  data->color = GColorBlack;
+  data->hint = NULL;
+  data->timer = app_timer_register(STEP_MS, prv_step, layer);
   layer_set_update_proc(layer, prv_layer_render);
-  animation_schedule(data->animation);
   return layer;
 }
 
 void thinking_layer_destroy(ThinkingLayer *layer) {
   ThinkingLayerData* data = layer_get_data(layer);
-  animation_destroy(data->animation);
-  data->animation = NULL;
+  if (data->timer) {
+    app_timer_cancel(data->timer);
+    data->timer = NULL;
+  }
   layer_destroy(layer);
 }
 
-static void prv_animation_update(Animation* animation, const AnimationProgress progress) {
-  ThinkingLayer* layer = animation_get_context(animation);
+void thinking_layer_set_color(ThinkingLayer *layer, GColor color) {
   ThinkingLayerData* data = layer_get_data(layer);
-  data->progress = progress;
+  data->color = color;
   layer_mark_dirty(layer);
+}
+
+void thinking_layer_set_hint(ThinkingLayer *layer, const char *hint) {
+  ThinkingLayerData* data = layer_get_data(layer);
+  if (data->hint == hint) {
+    return;
+  }
+  data->hint = hint;
+  if (hint && data->timer) {
+    app_timer_cancel(data->timer);
+    data->timer = NULL;
+  } else if (!hint && !data->timer) {
+    data->step = 0;
+    data->timer = app_timer_register(STEP_MS, prv_step, layer);
+  }
+  layer_mark_dirty(layer);
+}
+
+static void prv_step(void *context) {
+  ThinkingLayer* layer = context;
+  ThinkingLayerData* data = layer_get_data(layer);
+  data->step = (data->step + 1) % 3;
+  data->timer = app_timer_register(STEP_MS, prv_step, layer);
+  layer_mark_dirty(layer);
+}
+
+static void prv_render_hint(ThinkingLayerData *data, GRect bounds, GContext *ctx) {
+  GFont font = fonts_get_system_font(SQUIRE_FONT_CAPTION);
+  GSize text = graphics_text_layout_get_content_size(data->hint, font, GRect(0, 0, bounds.size.w, bounds.size.h),
+                                                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft);
+  const int16_t glyph_w = 12 + SQUIRE_SPACE_S;
+  int16_t x = (bounds.size.w - glyph_w - text.w) / 2;
+  if (x < 0) {
+    x = 0;
+  }
+  const int16_t mid = bounds.size.h / 2;
+  squire_draw_select_glyph(ctx, GPoint(x + 6, mid), data->color);
+  graphics_context_set_text_color(ctx, data->color);
+  graphics_draw_text(ctx, data->hint, font, GRect(x + glyph_w, mid - 10, bounds.size.w - x - glyph_w, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static void prv_layer_render(Layer* layer, GContext* ctx) {
   ThinkingLayerData* data = layer_get_data(layer);
-  GRect bounds = layer_get_bounds(layer);
-  int max_radius = bounds.size.h / 2;
-  graphics_context_set_fill_color(ctx, GColorBlack);
-  graphics_fill_circle(ctx, GPoint(bounds.origin.x + max_radius, max_radius), prv_progress_to_radius(data->progress, 0, max_radius));
-  graphics_fill_circle(ctx, GPoint(bounds.origin.x + bounds.size.w / 2, max_radius), prv_progress_to_radius(data->progress, 1, max_radius));
-  graphics_fill_circle(ctx, GPoint(bounds.origin.x + bounds.size.w - max_radius - 1, max_radius), prv_progress_to_radius(data->progress, 2, max_radius));
-}
-
-int prv_progress_to_radius(AnimationProgress progress, int section, int max_radius) {
-  const int SEGMENT_SIZE = ANIMATION_NORMALIZED_MAX / 3;
-  int min_radius = max_radius / 3 * 2;
-  if (progress < section * SEGMENT_SIZE || progress > (section + 1) * SEGMENT_SIZE) {
-    return min_radius;
+  GRect full = layer_get_bounds(layer);
+  if (data->hint) {
+    prv_render_hint(data, full, ctx);
+    return;
   }
-  progress = progress % SEGMENT_SIZE;
-  if (progress < SEGMENT_SIZE / 2) {
-    return min_radius + ((max_radius - min_radius) * progress / (SEGMENT_SIZE/2));
-  } else {
-    return max_radius - ((max_radius - min_radius) * (progress - SEGMENT_SIZE / 2) / (SEGMENT_SIZE/2));
+  // Centre the dots in whatever space we were given.
+  GRect bounds = full;
+  if (bounds.size.w > THINKING_LAYER_WIDTH) {
+    bounds.origin.x = (bounds.size.w - THINKING_LAYER_WIDTH) / 2;
+    bounds.size.w = THINKING_LAYER_WIDTH;
+  }
+  if (bounds.size.h > THINKING_LAYER_HEIGHT) {
+    bounds.origin.y = (bounds.size.h - THINKING_LAYER_HEIGHT) / 2;
+    bounds.size.h = THINKING_LAYER_HEIGHT;
+  }
+  int max_radius = bounds.size.h / 2;
+  int min_radius = max_radius * 2 / 3;
+  graphics_context_set_fill_color(ctx, data->color);
+  graphics_context_set_stroke_color(ctx, data->color);
+  graphics_context_set_stroke_width(ctx, 1);
+  int span = bounds.size.w - max_radius * 2 - 1;
+  for (int i = 0; i < 3; ++i) {
+    GPoint center = GPoint(bounds.origin.x + max_radius + span * i / 2, bounds.origin.y + max_radius);
+    if (i == data->step) {
+      graphics_fill_circle(ctx, center, max_radius);
+    } else {
+      // Resting dots are hollow, so the active one reads even in one colour.
+      graphics_draw_circle(ctx, center, min_radius);
+    }
   }
 }

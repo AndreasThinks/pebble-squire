@@ -23,7 +23,7 @@ describe('history transport', () => {
 
     beforeEach(() => {
         sent = [];
-        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(msg); ok(); });
+        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(stripSeq(msg)); ok(); });
         Queue.reset();
         messages = [];
         getMessages = vi.fn(() => Promise.resolve(messages));
@@ -135,7 +135,7 @@ describe('history transport', () => {
         messages = [bot(2, 'answer'), own(1, 'prompt')];
         global.Pebble.sendAppMessage = vi.fn((msg, ok, fail) => {
             if ('HISTORY_PROMPT' in msg) fail();
-            else { sent.push(msg); ok(); }
+            else { sent.push(stripSeq(msg)); ok(); }
         });
         await history.fetchAndSendHistory();
         await vi.runAllTimersAsync();

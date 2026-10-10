@@ -81,12 +81,15 @@ function idGreater(a, b) {
     return Number(a) > Number(b);
 }
 
+var refusalReason = null;
+
 function Session(prompt, threadId, requestId) {
     this.prompt = typeof prompt === 'string' ? prompt : '';
     this.threadId = (typeof threadId === 'string' && THREAD_ID_RE.test(threadId)) ? threadId : null;
     this.requestId = (typeof requestId === 'number' && requestId > 0) ? requestId : null;
     this.group = this.requestId !== null ? 'request:' + this.requestId : 'local:' + (++localGroupCounter);
     this.finished = false;
+    this.promptSent = false;
     this.client = null;
     this.botId = null;
     this.botUsername = '';
@@ -111,13 +114,21 @@ Session.prototype.emit = function(message, terminal) {
     messageQueue.enqueue(message, {
         group: this.group,
         terminal: !!terminal,
-        onFailed: function() { self.onDeliveryFailed(); }
+        onFailed: function(group, reason) { self.onDeliveryFailed(reason); }
     });
 };
 
 Session.prototype.run = function() {
     var self = this;
+    if (refusalReason) {
+        // e.g. mid sign-out: don't send the prompt on an account being revoked.
+        this.finish(refusalReason);
+        return this.done;
+    }
     if (!telegram.hasSession()) {
+        // The watch may still think it's signed in; correct it, so its home
+        // screen offers sign-in rather than another doomed request.
+        messageQueue.enqueue({ TELEGRAM_CONNECTED: 0 });
         this.finish('Not signed in to Telegram. Sign in from the watch or from Squire\'s settings on your phone.');
         return this.done;
     }
@@ -157,6 +168,9 @@ Session.prototype.run = function() {
         // Listen before sending, so a fast reply can't slip past us.
         self.startListening();
         if (self.finished) return null;
+        // From here the bot may answer this prompt, so it can no longer be
+        // silently superseded (see startSession).
+        self.promptSent = true;
         return self.client.sendMessage(entity, { message: message });
     }).then(function(sent) {
         if (self.finished || !sent) return;
@@ -175,6 +189,10 @@ Session.prototype.run = function() {
         if (self.finished) return;
         console.error('[session] Failed: ' + describeError(err));
         self.finish(userFacingError(err, self.botUsername));
+        if (REVOKED_SESSION_RE.test(describeError(err))) {
+            // Clears the session and tells the watch it's signed out.
+            telegram.forgetInvalidSession(describeError(err));
+        }
     });
     return this.done;
 };
@@ -448,10 +466,13 @@ Session.prototype.cancel = function() {
 
 // Part of the reply couldn't be delivered to the watch: stop, and say so
 // rather than leaving a silently incomplete reply.
-Session.prototype.onDeliveryFailed = function() {
+Session.prototype.onDeliveryFailed = function(reason) {
     var wasFinished = this.finished;
     this.cleanup();
-    this.emit({ WARNING: 'Part of the reply couldn\'t be delivered to the watch. Check the Bluetooth connection and try again.' }, true);
+    var warning = (reason === 'queue-full' || reason === 'too-large')
+        ? 'The reply was too long to send to the watch. Read the rest in Telegram.'
+        : 'Part of the reply couldn\'t be delivered to the watch. Check the Bluetooth connection and try again.';
+    this.emit({ WARNING: warning }, true);
     this.emit({ CHAT_DONE: 1 }, true);
     if (!wasFinished) {
         this.resolveDone({ complete: false, deliveryFailed: true });
@@ -500,6 +521,9 @@ function describeError(err) {
     return String((err && (err.errorMessage || err.code || err.message)) || err);
 }
 
+// Telegram's answers when the stored session is no longer valid.
+var REVOKED_SESSION_RE = /AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED/;
+
 function userFacingError(err, botUsername) {
     var text = describeError(err);
     if (err && err.code === 'APP_NOT_CONFIGURED') {
@@ -508,7 +532,7 @@ function userFacingError(err, botUsername) {
     if (err && err.code === 'SECURE_RANDOM_UNAVAILABLE') {
         return 'This phone runtime cannot connect securely to Telegram. It needs crypto.getRandomValues support.';
     }
-    if (/re-authenticate|session expired|No Telegram session/i.test(text)) {
+    if (/re-authenticate|session expired|No Telegram session/i.test(text) || REVOKED_SESSION_RE.test(text)) {
         return 'Telegram session expired. Sign in again from the watch or Squire\'s settings.';
     }
     if (/USERNAME_(NOT_OCCUPIED|INVALID)|Cannot find any entity|No user has/i.test(text)) {
@@ -523,11 +547,24 @@ function userFacingError(err, botUsername) {
     return 'Error communicating with agent: ' + text;
 }
 
+var BUSY_MESSAGE = 'Still waiting for the agent to answer your previous request. Try again once it replies (at most 5 minutes).';
+
 /**
- * Starts a session for a prompt from the watch, cancelling any session still
- * in progress (one request at a time).
+ * Starts a session for a prompt from the watch (one request at a time).
+ *
+ * A request whose prompt hasn't reached Telegram yet is superseded. One whose
+ * prompt has been sent is not: bots rarely mark which message they're
+ * answering, so a late reply to it would be indistinguishable from an answer
+ * to the new prompt. The new prompt is refused until the old request finishes
+ * (reply complete, error or timeout).
  */
 function startSession(prompt, threadId, requestId) {
+    if (activeSession && activeSession.promptSent) {
+        var refused = new Session(prompt, threadId, requestId);
+        console.log('[session] Refusing a prompt while the previous request is outstanding');
+        refused.finish(BUSY_MESSAGE);
+        return refused;
+    }
     if (activeSession) {
         activeSession.cancel();
     }
@@ -543,9 +580,24 @@ function cancelActiveSession() {
     }
 }
 
+// Ends the active session and tells the watch why, for when the request is
+// abandoned for a reason the watch doesn't know about (e.g. the bot changed).
+function abortActiveSession(warning) {
+    if (activeSession) {
+        activeSession.finish(warning);
+    }
+}
+
+// While set, new prompts are refused with this message instead of sent.
+function setRefusal(reason) {
+    refusalReason = reason || null;
+}
+
 exports.Session = Session;
 exports.startSession = startSession;
 exports.cancelActiveSession = cancelActiveSession;
+exports.abortActiveSession = abortActiveSession;
+exports.setRefusal = setRefusal;
 exports.getActiveSession = function() { return activeSession; };
 exports.resetMarkerMode = resetMarkerMode;
 exports.END_MARKER_RE = END_MARKER_RE;
@@ -553,3 +605,4 @@ exports.QUIET_COMPLETE_MS = QUIET_COMPLETE_MS;
 exports.MARKER_MODE_QUIET_MS = MARKER_MODE_QUIET_MS;
 exports.FIRST_REPLY_TIMEOUT_MS = FIRST_REPLY_TIMEOUT_MS;
 exports.HARD_TIMEOUT_MS = HARD_TIMEOUT_MS;
+exports.BUSY_MESSAGE = BUSY_MESSAGE;

@@ -30,6 +30,7 @@
 #include "util/memory/pressure.h"
 #include "util/auth_flow.h"
 #include "util/tuple_util.h"
+#include "util/transport.h"
 
 
 #define QUICK_LAUNCH_TIMEOUT_MS 60000
@@ -38,6 +39,11 @@ static RootWindow* s_root_window = NULL;
 static EventHandle s_history_handle;
 
 static void prv_history_message_handler(DictionaryIterator *iter, void *context) {
+  // History entries append; ignore a resend of the last message.
+  static TransportReplayGuard s_guard;
+  if (transport_is_replay(&s_guard, iter)) {
+    return;
+  }
   // BEGIN first and DONE last, whatever order the tuples arrive in.
   Tuple *tuple = dict_find(iter, MESSAGE_KEY_HISTORY_BEGIN);
   if (tuple) {

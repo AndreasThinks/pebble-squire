@@ -25,13 +25,33 @@
 static const char* const PRV_CHARSET = "0123456789";
 #define PRV_CHARSET_SIZE 10
 
+// Layout: an azure band with the step and title; the entered value (slots for
+// a login code, the tail of the number for a phone number); a spinner-style
+// digit picker with chevrons for UP/DOWN; and a footer naming the hold
+// gesture, which is otherwise undiscoverable.
+#ifdef PBL_ROUND
+#define BAND_TOP SQUIRE_SPACE_L
+#else
+#define BAND_TOP 0
+#endif
+#if PBL_DISPLAY_WIDTH >= 200
+#define BAND_HEIGHT (BAND_TOP + 46)
+#define TILE_W 48
+#define TILE_H 50
+#define GAP SQUIRE_SPACE_M
+#else
+#define BAND_HEIGHT (BAND_TOP + 40)
+#define TILE_W 40
+#define TILE_H 42
+#define GAP SQUIRE_SPACE_S
+#endif
+#define VALUE_HEIGHT 30
+#define CHEVRON 6
+#define SIDE_INSET (SQUIRE_SPACE_M + SQUIRE_ROUND_INSET)
+
 typedef struct {
   Window *window;
-  TextLayer *title_layer;
-  TextLayer *value_layer;
-  TextLayer *digit_layer;
-  TextLayer *hint_layer;
-  TextLayer *hint2_layer;
+  Layer *canvas;
   char title_text[48];
   char value[MAX_ENTRY_LENGTH + 1];
   char confirm_label[MAX_ENTRY_LENGTH + 16];
@@ -63,6 +83,17 @@ static void prv_action_menu_closed(ActionMenu *action_menu, const ActionMenuItem
 void auth_entry_window_push_with_prefix(const char* title, int max_length, bool show_plus_prefix, AuthEntryCallback callback, AuthEntryCancelCallback cancel_callback) {
   Window *window = bwindow_create();
   AuthEntryWindowData *data = bmalloc(sizeof(AuthEntryWindowData));
+  if (!window || !data) {
+    SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Not enough memory to show sign-in entry.");
+    free(data);
+    if (window) {
+      window_destroy(window);
+    }
+    if (cancel_callback) {
+      cancel_callback();
+    }
+    return;
+  }
   memset(data, 0, sizeof(AuthEntryWindowData));
   data->window = window;
   data->max_length = max_length > 0 && max_length < MAX_ENTRY_LENGTH ? max_length : MAX_ENTRY_LENGTH;
@@ -85,52 +116,153 @@ void auth_entry_window_push(const char* title, int max_length, AuthEntryCallback
   auth_entry_window_push_with_prefix(title, max_length, true, callback, cancel_callback);
 }
 
+static void prv_draw_chevron(GContext *ctx, GPoint tip, bool up, GColor color) {
+  GPathInfo info = {
+    .num_points = 3,
+    .points = (GPoint[]) {
+      { tip.x, tip.y },
+      { tip.x - CHEVRON, tip.y + (up ? CHEVRON : -CHEVRON) },
+      { tip.x + CHEVRON, tip.y + (up ? CHEVRON : -CHEVRON) },
+    },
+  };
+  GPath path = { .num_points = info.num_points, .points = info.points };
+  graphics_context_set_fill_color(ctx, color);
+  gpath_draw_filled(ctx, &path);
+}
+
+// One underlined slot per digit of the login code; the next empty slot is
+// marked in gold so it's clear how many digits remain.
+static void prv_draw_code_slots(GContext *ctx, AuthEntryWindowData *data, GRect box) {
+  const int n = data->max_length;
+  int slot_w = (box.size.w + SQUIRE_SPACE_S) / n - SQUIRE_SPACE_S;
+  if (slot_w > 22) {
+    slot_w = 22;
+  }
+  const int total = n * slot_w + (n - 1) * SQUIRE_SPACE_S;
+  int x = box.origin.x + (box.size.w - total) / 2;
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  char digit[2] = {0, 0};
+  for (int i = 0; i < n; ++i, x += slot_w + SQUIRE_SPACE_S) {
+    const bool next = i == data->value_length;
+    graphics_context_set_fill_color(ctx, next ? PBL_IF_COLOR_ELSE(SQUIRE_COLOR_GOLD, GColorBlack) : SQUIRE_COLOR_MUTED);
+    graphics_fill_rect(ctx, GRect(x, box.origin.y + box.size.h - (next ? 4 : 2), slot_w, next ? 4 : 2), 0, GCornerNone);
+    if (i < data->value_length) {
+      digit[0] = data->value[i];
+      graphics_context_set_text_color(ctx, GColorBlack);
+      graphics_draw_text(ctx, digit, font, GRect(x - 2, box.origin.y - 2, slot_w + 4, 28),
+                         GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+    }
+  }
+}
+
+// The phone number grows from the right; when it no longer fits, its start
+// is elided so the digits just entered stay visible.
+static void prv_draw_phone_value(GContext *ctx, AuthEntryWindowData *data, GRect box) {
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  if (data->value_length == 0) {
+    graphics_context_set_text_color(ctx, SQUIRE_COLOR_MUTED);
+    graphics_draw_text(ctx, "Country code first", fonts_get_system_font(SQUIRE_FONT_LABEL), GRect(box.origin.x, box.origin.y + 4, box.size.w, box.size.h),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    return;
+  }
+  char shown[MAX_ENTRY_LENGTH + 8];
+  const char *digits = data->value;
+  for (;;) {
+    snprintf(shown, sizeof(shown), "%s%s", digits == data->value ? (data->show_plus_prefix ? "+" : "") : "\xE2\x80\xA6", digits);
+    GSize size = graphics_text_layout_get_content_size(shown, font, GRect(0, 0, 1000, 40), GTextOverflowModeFill, GTextAlignmentLeft);
+    if (size.w <= box.size.w || digits[1] == '\0') {
+      break;
+    }
+    digits++;
+  }
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, shown, font, box, GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+}
+
+static void prv_canvas_update(Layer *layer, GContext *ctx) {
+  AuthEntryWindowData *data = *(AuthEntryWindowData **)layer_get_data(layer);
+  GRect bounds = layer_get_bounds(layer);
+  const int16_t w = bounds.size.w;
+
+  // Band: step and title.
+  graphics_context_set_fill_color(ctx, SQUIRE_COLOR_AZURE);
+  graphics_fill_rect(ctx, GRect(0, 0, w, BAND_HEIGHT), 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, data->show_plus_prefix ? "Sign in \xC2\xB7 1 of 2" : "Sign in \xC2\xB7 2 of 2",
+                     fonts_get_system_font(SQUIRE_FONT_CAPTION), GRect(SIDE_INSET, BAND_TOP, w - SIDE_INSET * 2, 16),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  graphics_draw_text(ctx, data->title_text, fonts_get_system_font(SQUIRE_FONT_TITLE),
+                     GRect(SIDE_INSET, BAND_TOP + 10, w - SIDE_INSET * 2, 28),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+  // Value.
+  GRect value_box = GRect(SIDE_INSET, BAND_HEIGHT + GAP - 2, w - SIDE_INSET * 2, VALUE_HEIGHT);
+  if (data->show_plus_prefix) {
+    prv_draw_phone_value(ctx, data, value_box);
+  } else {
+    prv_draw_code_slots(ctx, data, value_box);
+  }
+
+  // Picker: chevrons for UP and DOWN around the digit SELECT will add.
+  const int16_t cx = w / 2;
+  const int16_t up_tip = value_box.origin.y + VALUE_HEIGHT + GAP;
+  const int16_t tile_y = up_tip + CHEVRON + SQUIRE_SPACE_XS;
+  const bool full = data->value_length >= data->max_length;
+  const GColor ink = full ? SQUIRE_COLOR_MUTED : SQUIRE_COLOR_AZURE;
+  prv_draw_chevron(ctx, GPoint(cx, up_tip), true, ink);
+  GRect tile = GRect(cx - TILE_W / 2, tile_y, TILE_W, TILE_H);
+  graphics_context_set_fill_color(ctx, ink);
+  graphics_fill_rect(ctx, tile, SQUIRE_CORNER, GCornersAll);
+  char digit_text[2] = { PRV_CHARSET[data->selected_digit], '\0' };
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, digit_text, fonts_get_system_font(FONT_KEY_LECO_32_BOLD_NUMBERS),
+                     GRect(tile.origin.x, tile.origin.y + (TILE_H - 32) / 2 - 2, TILE_W, 36),
+                     GTextOverflowModeFill, GTextAlignmentCenter, NULL);
+  prv_draw_chevron(ctx, GPoint(cx, tile_y + TILE_H + SQUIRE_SPACE_XS + CHEVRON), false, ink);
+
+  // Footer: the gestures that aren't obvious from the picker.
+  const int16_t footer_y = tile_y + TILE_H + SQUIRE_SPACE_XS + CHEVRON + GAP - 2;
+  const char *hint;
+#if PBL_DISPLAY_WIDTH >= 200
+  if (full) {
+    hint = "SELECT to confirm";
+  } else if (data->value_length > 0) {
+    hint = "Hold SELECT when done";
+  } else {
+    hint = "SELECT adds the digit";
+  }
+#else
+  if (full) {
+    hint = "SELECT: confirm";
+  } else if (data->value_length > 0) {
+    hint = "Hold SELECT: done";
+  } else {
+    hint = "SELECT: add digit";
+  }
+#endif
+  graphics_context_set_text_color(ctx, SQUIRE_COLOR_MUTED);
+  graphics_draw_text(ctx, hint, fonts_get_system_font(SQUIRE_FONT_CAPTION),
+                     GRect(SIDE_INSET, footer_y, w - SIDE_INSET * 2, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+#if PBL_DISPLAY_HEIGHT >= 220
+  graphics_draw_text(ctx, data->value_length > 0 ? "BACK deletes a digit" : "BACK cancels",
+                     fonts_get_system_font(SQUIRE_FONT_CAPTION),
+                     GRect(SIDE_INSET, footer_y + 16, w - SIDE_INSET * 2, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+#endif
+}
+
 static void prv_window_load(Window* window) {
   AuthEntryWindowData *data = window_get_user_data(window);
   Layer *root_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root_layer);
 
-  data->title_layer = btext_layer_create(GRect(5, 5, bounds.size.w - 10, 30));
-  text_layer_set_background_color(data->title_layer, GColorClear);
-  text_layer_set_text_color(data->title_layer, GColorBlack);
-  text_layer_set_font(data->title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text(data->title_layer, data->title_text);
-  text_layer_set_text_alignment(data->title_layer, GTextAlignmentCenter);
-  layer_add_child(root_layer, text_layer_get_layer(data->title_layer));
-
-  data->value_layer = btext_layer_create(GRect(10, 38, bounds.size.w - 20, 28));
-  text_layer_set_background_color(data->value_layer, GColorClear);
-  text_layer_set_text_color(data->value_layer, GColorBlack);
-  text_layer_set_font(data->value_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text_alignment(data->value_layer, GTextAlignmentCenter);
-  text_layer_set_overflow_mode(data->value_layer, GTextOverflowModeTrailingEllipsis);
-  layer_add_child(root_layer, text_layer_get_layer(data->value_layer));
-
-  data->digit_layer = btext_layer_create(GRect(bounds.size.w / 2 - 30, 70, 60, 60));
-  text_layer_set_background_color(data->digit_layer, GColorBlack);
-  text_layer_set_text_color(data->digit_layer, GColorWhite);
-  text_layer_set_font(data->digit_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
-  text_layer_set_text_alignment(data->digit_layer, GTextAlignmentCenter);
-  layer_add_child(root_layer, text_layer_get_layer(data->digit_layer));
-
-  data->hint_layer = btext_layer_create(GRect(5, bounds.size.h - 45, bounds.size.w - 10, 20));
-  text_layer_set_background_color(data->hint_layer, GColorClear);
-  text_layer_set_text_color(data->hint_layer, GColorBlack);
-  text_layer_set_font(data->hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-  text_layer_set_text(data->hint_layer, "UP/DN: digit | SEL: add");
-  text_layer_set_text_alignment(data->hint_layer, GTextAlignmentCenter);
-  layer_add_child(root_layer, text_layer_get_layer(data->hint_layer));
-
-  data->hint2_layer = btext_layer_create(GRect(5, bounds.size.h - 25, bounds.size.w - 10, 20));
-  text_layer_set_background_color(data->hint2_layer, GColorClear);
-  text_layer_set_text_color(data->hint2_layer, GColorBlack);
-  text_layer_set_font(data->hint2_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
-  text_layer_set_text(data->hint2_layer, "hold SEL: done");
-  text_layer_set_text_alignment(data->hint2_layer, GTextAlignmentCenter);
-  layer_add_child(root_layer, text_layer_get_layer(data->hint2_layer));
-
-  prv_update_display(data);
-
+  data->canvas = blayer_create_with_data(bounds, sizeof(AuthEntryWindowData *));
+  if (data->canvas) {
+    *(AuthEntryWindowData **)layer_get_data(data->canvas) = data;
+    layer_set_update_proc(data->canvas, prv_canvas_update);
+    layer_add_child(root_layer, data->canvas);
+  }
   window_set_click_config_provider(window, prv_click_config_provider);
 }
 
@@ -140,29 +272,17 @@ static void prv_window_unload(Window* window) {
     action_menu_close(data->action_menu, false);
     data->action_menu = NULL;
   }
-  text_layer_destroy(data->title_layer);
-  text_layer_destroy(data->value_layer);
-  text_layer_destroy(data->digit_layer);
-  text_layer_destroy(data->hint_layer);
-  text_layer_destroy(data->hint2_layer);
+  if (data->canvas) {
+    layer_destroy(data->canvas);
+  }
   free(data);
   window_destroy(window);
 }
 
 static void prv_update_display(AuthEntryWindowData* data) {
-  static char digit_text[2];
-  static char display_value[MAX_ENTRY_LENGTH + 4];
-  digit_text[0] = PRV_CHARSET[data->selected_digit];
-  digit_text[1] = '\0';
-  text_layer_set_text(data->digit_layer, digit_text);
-  text_layer_set_text(data->title_layer, data->title_text);
-
-  if (data->show_plus_prefix) {
-    snprintf(display_value, sizeof(display_value), "+%s", data->value);
-  } else {
-    snprintf(display_value, sizeof(display_value), "%s", data->value);
+  if (data->canvas) {
+    layer_mark_dirty(data->canvas);
   }
-  text_layer_set_text(data->value_layer, display_value);
 }
 
 static void prv_submit(AuthEntryWindowData *data) {
@@ -178,23 +298,20 @@ static void prv_submit(AuthEntryWindowData *data) {
 
 static void prv_present_confirm_menu(AuthEntryWindowData* data) {
   if (data->show_plus_prefix) {
-    snprintf(data->confirm_label, sizeof(data->confirm_label), "Confirm +%s", data->value);
+    snprintf(data->confirm_label, sizeof(data->confirm_label), "Send +%s", data->value);
   } else {
-    snprintf(data->confirm_label, sizeof(data->confirm_label), "Confirm %s", data->value);
+    snprintf(data->confirm_label, sizeof(data->confirm_label), "Send code %s", data->value);
   }
   ActionMenuLevel* root_level = baction_menu_level_create(2);
   action_menu_level_add_action(root_level, data->confirm_label, prv_confirm_menu_selected, (void *)true);
-  action_menu_level_add_action(root_level, "Edit", prv_confirm_menu_selected, (void *)false);
+  action_menu_level_add_action(root_level, "Keep editing", prv_confirm_menu_selected, (void *)false);
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = root_level,
-    .colors = {
-      .background = BRANDED_BACKGROUND_COLOUR,
-      .foreground = gcolor_legible_over(BRANDED_BACKGROUND_COLOUR),
-    },
     .align = ActionMenuAlignCenter,
     .context = data,
     .did_close = prv_action_menu_closed,
   };
+  squire_action_menu_colors(&config);
   data->action_menu = action_menu_open(&config);
 }
 

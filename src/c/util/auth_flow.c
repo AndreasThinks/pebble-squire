@@ -57,6 +57,20 @@ static const char* prv_error_message(int32_t reason) {
   }
 }
 
+// Progress cards cover the gaps while the phone talks to Telegram; any answer
+// from the phone replaces them.
+static void prv_show_progress(const char *title, const char *text) {
+  result_window_push(ResultToneProgress, title, text, RESULT_WINDOW_PERSISTENT);
+}
+
+static void prv_dismiss_progress(void) {
+  // Only while a watch sign-in is under way: the phone also sends status
+  // unprompted, which mustn't close someone else's progress card.
+  if (s_complete_callback) {
+    result_window_dismiss_progress();
+  }
+}
+
 static void prv_cancel(void) {
   s_complete_callback = NULL;
   s_waiting_for_code = false;
@@ -72,19 +86,20 @@ static void prv_phone_entered(const char* value) {
   AppMessageResult result = app_message_outbox_begin(&iter);
   if (result != APP_MSG_OK) {
     SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to prepare auth outbox: %d", result);
-    result_window_push_persistent("Error", "Could not send to phone. Try again.", NULL, GColorWhite);
+    result_window_push_phone_unreachable();
     return;
   }
   dict_write_cstring(iter, MESSAGE_KEY_TELEGRAM_START_AUTH, normalized);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
     SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to send auth message: %d", result);
-    result_window_push_persistent("Error", "Could not send to phone. Try again.", NULL, GColorWhite);
+    result_window_push_phone_unreachable();
     return;
   }
 
   s_waiting_for_code = true;
-  // Don't block the UI; the code entry screen will be pushed when TELEGRAM_CODE_SENT arrives.
+  // The code entry screen replaces this card when TELEGRAM_CODE_SENT arrives.
+  prv_show_progress("Requesting code", "Asking Telegram to send a login code to your Telegram app.");
 }
 
 static void prv_code_entered(const char* value) {
@@ -94,34 +109,35 @@ static void prv_code_entered(const char* value) {
   AppMessageResult result = app_message_outbox_begin(&iter);
   if (result != APP_MSG_OK) {
     SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to prepare auth outbox: %d", result);
-    result_window_push_persistent("Error", "Could not send to phone. Try again.", NULL, GColorWhite);
+    result_window_push_phone_unreachable();
     return;
   }
   dict_write_cstring(iter, MESSAGE_KEY_TELEGRAM_PROVIDE_CODE, value);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
     SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to send auth message: %d", result);
-    result_window_push_persistent("Error", "Could not send to phone. Try again.", NULL, GColorWhite);
+    result_window_push_phone_unreachable();
     return;
   }
 
-  result_window_push("Verifying...", "Checking your code with Telegram.", NULL, GColorWhite);
+  prv_show_progress("Checking code", "Confirming your code with Telegram.");
 }
 
 void auth_flow_start(AuthFlowCompleteCallback callback) {
   s_complete_callback = callback;
   s_waiting_for_code = false;
   s_agent_username[0] = '\0';
-  auth_entry_window_push("Phone Number", 15, prv_phone_entered, prv_cancel);
+  auth_entry_window_push("Phone number", 15, prv_phone_entered, prv_cancel);
 }
 
 void auth_flow_handle_message(uint32_t key, const char* value, int32_t number) {
   if (key == MESSAGE_KEY_TELEGRAM_CODE_SENT) {
+    prv_dismiss_progress();
     if (s_waiting_for_code) {
       // The phone reports the code length Telegram announced (older phone
       // code sent 1); fall back to the usual five digits.
       s_code_length = (number >= 4 && number <= 8) ? number : DEFAULT_CODE_LENGTH;
-      auth_entry_window_push_with_prefix("Enter Code", s_code_length, false, prv_code_entered, prv_cancel);
+      auth_entry_window_push_with_prefix("Login code", s_code_length, false, prv_code_entered, prv_cancel);
     }
   } else if (key == MESSAGE_KEY_TELEGRAM_CONNECTED) {
     if (value) {
@@ -129,6 +145,7 @@ void auth_flow_handle_message(uint32_t key, const char* value, int32_t number) {
     } else {
       s_agent_username[0] = '\0';
     }
+    prv_dismiss_progress();
     if (s_complete_callback) {
       AuthFlowCompleteCallback cb = s_complete_callback;
       s_complete_callback = NULL;
@@ -140,19 +157,21 @@ void auth_flow_handle_message(uint32_t key, const char* value, int32_t number) {
     // Two-step verification: the password can't be entered on the watch.
     // Keep the flow pending — once the password is entered on the phone's
     // settings page, TELEGRAM_CONNECTED will arrive and complete it.
-    result_window_push_persistent("Two-Step Verification",
+    prv_dismiss_progress();
+    result_window_push(ResultToneWarning, "Password needed",
         "Your account has a Telegram cloud password. Open Squire's settings in the Pebble phone app and enter it there to finish signing in.",
-        NULL, GColorWhite);
+        RESULT_WINDOW_PERSISTENT);
     s_waiting_for_code = false;
   } else if (key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
+    prv_dismiss_progress();
     if (number == AuthErrorInvalidCode && s_complete_callback) {
       // The phone keeps the pending sign-in; let the user re-enter the code
       // once they've dismissed the error.
-      auth_entry_window_push_with_prefix("Enter Code", s_code_length, false, prv_code_entered, prv_cancel);
-      result_window_push_persistent("Sign-In Failed", prv_error_message(number), NULL, GColorWhite);
+      auth_entry_window_push_with_prefix("Login code", s_code_length, false, prv_code_entered, prv_cancel);
+      result_window_push(ResultToneError, "Wrong code", prv_error_message(number), RESULT_WINDOW_PERSISTENT);
       return;
     }
-    result_window_push_persistent("Sign-In Failed", prv_error_message(number), NULL, GColorWhite);
+    result_window_push(ResultToneError, "Sign-in failed", prv_error_message(number), RESULT_WINDOW_PERSISTENT);
     if (s_complete_callback) {
       AuthFlowCompleteCallback cb = s_complete_callback;
       s_complete_callback = NULL;
@@ -163,5 +182,6 @@ void auth_flow_handle_message(uint32_t key, const char* value, int32_t number) {
 }
 
 void auth_flow_cancel(void) {
+  prv_dismiss_progress();
   prv_cancel();
 }

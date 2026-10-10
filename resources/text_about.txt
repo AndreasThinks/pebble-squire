@@ -1,6 +1,6 @@
 # Squire
 ## Version %d.%d
-Your AI assistant squire (forked from Bobby for agentic superpowers)
+Your AI agent, on your wrist. Squire carries your words to the agent you run and brings its answers back.
 
 ## Original Project
 Based on Bobby by Katharine Berry

@@ -17,13 +17,30 @@
 #include "info_layer.h"
 #include "../../util/memory/malloc.h"
 #include "../../util/memory/sdk.h"
+#include "../../util/style.h"
 #include <pebble.h>
 
-#define CONTENT_FONT FONT_KEY_GOTHIC_24
-#define STRIPE_WIDTH 24
-#define TEXT_PADDING_LEFT 2
-#define TEXT_PADDING_RIGHT 5
-#define UNAVAILABLE_WIDTH (STRIPE_WIDTH + TEXT_PADDING_LEFT + TEXT_PADDING_RIGHT)
+// Thoughts, actions and errors are asides rather than conversation, so they
+// sit in a tinted card with their icon: gold for a thought, sky for an
+// action, rose for an error. Monochrome screens get an outlined white card.
+// Rectangular screens put the icon on the left; round screens stack it above
+// the centred text.
+
+#define CONTENT_FONT SQUIRE_FONT_BODY
+#define ICON_SIZE 18
+#define CARD_MARGIN_X (SQUIRE_SPACE_M + SQUIRE_ROUND_INSET)
+#define CARD_MARGIN_Y SQUIRE_SPACE_S
+#define CARD_PAD SQUIRE_SPACE_S
+#define GLYPH_TOP_SLACK 4
+#ifdef PBL_ROUND
+#define TEXT_LEFT CARD_PAD
+#define TEXT_TOP (CARD_PAD + ICON_SIZE + SQUIRE_SPACE_XS)
+#define TEXT_ALIGNMENT GTextAlignmentCenter
+#else
+#define TEXT_LEFT (CARD_PAD + ICON_SIZE + SQUIRE_SPACE_S)
+#define TEXT_TOP CARD_PAD
+#define TEXT_ALIGNMENT GTextAlignmentLeft
+#endif
 
 typedef struct {
   ConversationEntry* entry;
@@ -39,24 +56,29 @@ static int prv_get_content_height(InfoLayer* layer);
 static void prv_layer_render(Layer* layer, GContext* ctx);
 static char* prv_generate_action_text(ConversationAction* action);
 static uint32_t prv_get_icon_resource(ConversationEntry* entry);
-static GColor prv_get_stripe_color(ConversationEntry* entry);
+static GColor prv_get_tint(ConversationEntry* entry);
+
+static int16_t prv_card_width(int16_t layer_w) {
+  return layer_w - CARD_MARGIN_X * 2;
+}
+
+static int16_t prv_text_width(int16_t layer_w) {
+  return prv_card_width(layer_w) - TEXT_LEFT - CARD_PAD;
+}
 
 InfoLayer* info_layer_create(GRect rect, ConversationEntry* entry) {
-    Layer* layer = blayer_create_with_data(rect, sizeof(InfoLayerData));
-    if (!layer) {
-      return NULL;
-    }
-    InfoLayerData* data = layer_get_data(layer);
-    data->entry = entry;
-    data->icon = NULL;
-    data->content_text = NULL;
-    data->content_height = 24;
+  Layer* layer = blayer_create_with_data(rect, sizeof(InfoLayerData));
+  if (!layer) {
+    return NULL;
+  }
+  InfoLayerData* data = layer_get_data(layer);
+  data->entry = entry;
+  data->icon = NULL;
+  data->icon_resource = 0;
+  data->content_text = NULL;
   data->content_height = prv_get_content_height(layer);
-#ifdef PBL_PLATFORM_GABBRO
-  data->content_layer = btext_layer_create(GRect(0, 1, rect.size.w, data->content_height));
-#else
-  data->content_layer = btext_layer_create(GRect(STRIPE_WIDTH + TEXT_PADDING_LEFT, 1, rect.size.w - UNAVAILABLE_WIDTH, data->content_height));
-#endif
+  data->content_layer = btext_layer_create(GRect(CARD_MARGIN_X + TEXT_LEFT, CARD_MARGIN_Y + TEXT_TOP - GLYPH_TOP_SLACK,
+                                                 prv_text_width(rect.size.w), data->content_height));
   if (!data->content_layer) {
     if (data->content_text) {
       free(data->content_text);
@@ -64,19 +86,15 @@ InfoLayer* info_layer_create(GRect rect, ConversationEntry* entry) {
     layer_destroy(layer);
     return NULL;
   }
-#ifdef PBL_PLATFORM_GABBRO
-  text_layer_set_text_alignment(data->content_layer, GTextAlignmentCenter);
-#else
-  text_layer_set_text_alignment(data->content_layer, GTextAlignmentLeft);
-#endif
+  text_layer_set_text_alignment(data->content_layer, TEXT_ALIGNMENT);
   text_layer_set_text(data->content_layer, prv_get_content_text(layer));
   text_layer_set_font(data->content_layer, fonts_get_system_font(CONTENT_FONT));
   text_layer_set_background_color(data->content_layer, GColorClear);
-    data->content_height = text_layer_get_content_size(data->content_layer).h;
-    layer_add_child(layer, (Layer *)data->content_layer);
-    info_layer_update(layer);
-    layer_set_update_proc(layer, prv_layer_render);
-    return layer;
+  text_layer_set_text_color(data->content_layer, GColorBlack);
+  layer_add_child(layer, (Layer *)data->content_layer);
+  info_layer_update(layer);
+  layer_set_update_proc(layer, prv_layer_render);
+  return layer;
 }
 
 void info_layer_destroy(InfoLayer* layer) {
@@ -101,10 +119,15 @@ void info_layer_update(InfoLayer* layer) {
   // The text pointer can change out underneath us.
   text_layer_set_text(data->content_layer, prv_get_content_text(layer));
   data->content_height = prv_get_content_height(layer);
-  int width = layer_get_bounds((Layer *)data->content_layer).size.w;
   GRect frame = layer_get_frame(layer);
-  frame.size.h = data->content_height + 11;
-  text_layer_set_size(data->content_layer, GSize(width, data->content_height + 5));
+  text_layer_set_size(data->content_layer, GSize(prv_text_width(frame.size.w), data->content_height + GLYPH_TOP_SLACK + 2));
+  int16_t card_h = TEXT_TOP + data->content_height + CARD_PAD + SQUIRE_SPACE_XS;
+#ifndef PBL_ROUND
+  if (card_h < ICON_SIZE + CARD_PAD * 2) {
+    card_h = ICON_SIZE + CARD_PAD * 2;
+  }
+#endif
+  frame.size.h = card_h + CARD_MARGIN_Y * 2;
   layer_set_frame(layer, frame);
   uint32_t new_resource = prv_get_icon_resource(data->entry);
   if (new_resource != data->icon_resource) {
@@ -131,36 +154,34 @@ static char *prv_get_content_text(InfoLayer *layer) {
       }
       return data->content_text ? data->content_text : "";
     default:
-      return "(Bobby bug)";
+      return "";
   }
 }
 
 static int prv_get_content_height(InfoLayer* layer) {
   char* text = prv_get_content_text(layer);
   const GFont font = fonts_get_system_font(CONTENT_FONT);
-#ifdef PBL_PLATFORM_GABBRO
-  const GRect rect = GRect(0, 0, layer_get_frame(layer).size.w, 10000);
-  GTextAlignment alignment = GTextAlignmentCenter;
-#else
-  const GRect rect = GRect(0, 0, layer_get_frame(layer).size.w - UNAVAILABLE_WIDTH, 10000);
-  GTextAlignment alignment = GTextAlignmentLeft;
-#endif
-  return graphics_text_layout_get_content_size(text, font, rect, GTextOverflowModeTrailingEllipsis, alignment).h;
+  const GRect rect = GRect(0, 0, prv_text_width(layer_get_frame(layer).size.w), 10000);
+  return graphics_text_layout_get_content_size(text, font, rect, GTextOverflowModeTrailingEllipsis, TEXT_ALIGNMENT).h;
 }
 
 static void prv_layer_render(Layer* layer, GContext* ctx) {
   InfoLayerData* data = layer_get_data(layer);
   GRect bounds = layer_get_bounds(layer);
-#ifndef PBL_PLATFORM_GABBRO
-  GColor stripe_color = prv_get_stripe_color(data->entry);
-  graphics_context_set_fill_color(ctx, stripe_color);
-  graphics_fill_rect(ctx, GRect(0, 0, STRIPE_WIDTH, bounds.size.h), 0, GCornerNone);
-#endif
+  GRect card = GRect(CARD_MARGIN_X, CARD_MARGIN_Y, prv_card_width(bounds.size.w), bounds.size.h - CARD_MARGIN_Y * 2);
+  graphics_context_set_fill_color(ctx, prv_get_tint(data->entry));
+  graphics_fill_rect(ctx, card, SQUIRE_CORNER, GCornersAll);
+#ifndef PBL_COLOR
   graphics_context_set_stroke_color(ctx, GColorBlack);
-  graphics_draw_line(ctx, GPoint(0, 0), GPoint(bounds.size.w, 0));
-  graphics_draw_line(ctx, GPoint(0, bounds.size.h - 1), GPoint(bounds.size.w, bounds.size.h - 1));
+  graphics_draw_round_rect(ctx, card, SQUIRE_CORNER);
+#endif
   if (data->icon) {
-    gdraw_command_image_draw(ctx, data->icon, GPoint(3, 10));
+#ifdef PBL_ROUND
+    GPoint icon_origin = GPoint(card.origin.x + (card.size.w - ICON_SIZE) / 2, card.origin.y + CARD_PAD);
+#else
+    GPoint icon_origin = GPoint(card.origin.x + CARD_PAD, card.origin.y + CARD_PAD);
+#endif
+    gdraw_command_image_draw(ctx, data->icon, icon_origin);
   }
 }
 
@@ -199,19 +220,14 @@ static uint32_t prv_get_icon_resource(ConversationEntry* entry) {
   }
 }
 
-static GColor prv_get_stripe_color(ConversationEntry* entry) {
-#if defined(PBL_COLOR)
+static GColor prv_get_tint(ConversationEntry* entry) {
   switch (conversation_entry_get_type(entry)) {
     case EntryTypeThought:
-      return GColorYellow;
+      return SQUIRE_COLOR_THOUGHT_TINT;
     case EntryTypeError:
-      return GColorVeryLightBlue;
+      return SQUIRE_COLOR_ERROR_TINT;
     case EntryTypeAction:
-      return GColorShockingPink;
     default:
-      return GColorOrange;
+      return SQUIRE_COLOR_ACTION_TINT;
   }
-#else
-  return GColorDarkGray;
-#endif
 }

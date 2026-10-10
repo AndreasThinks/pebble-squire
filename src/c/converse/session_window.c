@@ -35,13 +35,24 @@
 #include <pebble.h>
 
 #define PADDING 5
-#ifdef PBL_PLATFORM_GABBRO
-#define SEGMENT_X 10
-#define SEGMENT_W_PADDING 20
-#define BOTTOM_PADDING 60
+// The tail below the last entry (see prv_update_thinking_layer).
+#define TAIL_GAP SQUIRE_SPACE_S
+#define TAIL_HEIGHT 22
+#define TAIL_SPACE (TAIL_GAP + TAIL_HEIGHT)
+#if PBL_DISPLAY_WIDTH >= 200
+#define TAIL_HINT "Reply \xC2\xB7 hold for more"
 #else
+#define TAIL_HINT "Reply \xC2\xB7 hold: more"
+#endif
+// Segments inset themselves for round screens (see style.h); the extra
+// bottom padding lets the last line scroll up out of the bezel's curve.
 #define SEGMENT_X 0
 #define SEGMENT_W_PADDING 0
+#if defined(PBL_PLATFORM_GABBRO)
+#define BOTTOM_PADDING 60
+#elif defined(PBL_ROUND)
+#define BOTTOM_PADDING 40
+#else
 #define BOTTOM_PADDING 0
 #endif
 
@@ -111,11 +122,14 @@ static void prv_auth_flow_complete(bool success, const char* agent_username) {
     settings_set_telegram_connected(true);
     char message[160];
     if (agent_username && agent_username[0]) {
-      snprintf(message, sizeof(message), "Your agent bot is %s.\nMake sure this matches the bot set in the app settings on your phone.", agent_username);
+      snprintf(message, sizeof(message), "Messages go to %s. Check that's your agent bot, then press SELECT to ask.", agent_username);
+      result_window_push(ResultToneSuccess, "Signed in", message, 10000);
     } else {
-      snprintf(message, sizeof(message), "Set your agent bot username in the app settings on your phone so messages go to the right bot.");
+      // Signed in, but nobody to talk to yet: the next step is on the phone.
+      result_window_push(ResultToneWarning, "Signed in",
+          "One more step: set your agent bot's username in Squire's settings in the Pebble phone app.",
+          RESULT_WINDOW_PERSISTENT);
     }
-    result_window_push_with_timeout("Signed In", message, NULL, GColorWhite, 10000);
   }
 }
 
@@ -135,6 +149,11 @@ static char* prv_strdup(const char* text) {
     memcpy(copy, text, len + 1);
   }
   return copy;
+}
+
+static void prv_show_out_of_memory(void) {
+  result_window_push(ResultToneError, "Out of memory",
+      "Not enough memory to open a chat. Go back a screen or two and try again.", RESULT_WINDOW_PERSISTENT);
 }
 
 static void prv_free_unpushed(SessionWindow* sw) {
@@ -191,7 +210,7 @@ static void prv_push_actual_session_window(int timeout, char *starting_prompt, c
   return;
 oom:
   SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Not enough memory to open a conversation.");
-  result_window_push("Out of Memory", "Not enough memory to start a conversation. Close some windows and try again.", NULL, GColorWhite);
+  prv_show_out_of_memory();
 }
 
 static void prv_destroy(SessionWindow *sw) {
@@ -274,8 +293,8 @@ static void prv_window_load(Window *window) {
     .times_out = true,
     .alignment = GAlignCenter,
     .colors = {
-      .foreground = GColorBlack,
-      .background = GColorWhite,
+      .foreground = PBL_IF_COLOR_ELSE(GColorWhite, GColorBlack),
+      .background = PBL_IF_COLOR_ELSE(SQUIRE_COLOR_AZURE, GColorWhite),
     }
   };
   content_indicator_configure_direction(indicator, ContentIndicatorDirectionUp, &up_config);
@@ -315,7 +334,7 @@ static void prv_window_appear(Window *window) {
   SessionWindow *sw = (SessionWindow *)window_get_user_data(window);
   if (sw->load_failed) {
     window_stack_remove(window, false);
-    result_window_push("Out of Memory", "Not enough memory to start a conversation. Close some windows and try again.", NULL, GColorWhite);
+    prv_show_out_of_memory();
     return;
   }
   if (sw->thread_id) {
@@ -355,6 +374,7 @@ static void prv_window_appear(Window *window) {
         break;
       }
     }
+    prv_update_thinking_layer(sw);
     prv_set_scroll_height(sw);
     GSize content_size = scroll_layer_get_content_size(sw->scroll_layer);
     GRect scroll_frame = layer_get_frame(scroll_layer_get_layer(sw->scroll_layer));
@@ -475,21 +495,24 @@ static void prv_set_scroll_height(SessionWindow* sw) {
   }
 }
 
+// The conversation ends with a "tail": stepping dots while the agent works,
+// then a still hint naming what SELECT does once it's the user's turn again.
 static void prv_update_thinking_layer(SessionWindow* sw) {
   ConversationEntry* entry = conversation_peek(conversation_manager_get_conversation(sw->manager));
-  bool visible = false;
-    if (entry != NULL) {
+  bool visible = entry != NULL;
+  bool working = false;
+  if (entry != NULL) {
     EntryType entry_type = conversation_entry_get_type(entry);
     if (entry_type == EntryTypePrompt || entry_type == EntryTypeAction || entry_type == EntryTypeThought) {
-      visible = true;
+      working = true;
     } else if (entry_type == EntryTypeResponse) {
-      visible = !conversation_entry_get_response(entry)->complete;
+      working = !conversation_entry_get_response(entry)->complete;
     }
   }
 
   if (!visible) {
     if (sw->thinking_layer) {
-      sw->content_height -= THINKING_LAYER_HEIGHT + 5;
+      sw->content_height -= TAIL_SPACE;
       layer_remove_from_parent(sw->thinking_layer);
       thinking_layer_destroy(sw->thinking_layer);
       sw->thinking_layer = NULL;
@@ -499,23 +522,25 @@ static void prv_update_thinking_layer(SessionWindow* sw) {
 
   GSize holder_size = scroll_layer_get_content_size(sw->scroll_layer);
   if (!sw->thinking_layer) {
-    sw->thinking_layer = thinking_layer_create(GRect((holder_size.w - THINKING_LAYER_WIDTH) / 2, sw->content_height + 5, THINKING_LAYER_WIDTH, THINKING_LAYER_HEIGHT));
+    sw->thinking_layer = thinking_layer_create(GRect(0, sw->content_height + TAIL_GAP, holder_size.w, TAIL_HEIGHT));
     if (!sw->thinking_layer) {
       return;
     }
+    thinking_layer_set_color(sw->thinking_layer, SQUIRE_COLOR_AZURE);
     scroll_layer_add_child(sw->scroll_layer, sw->thinking_layer);
-    sw->content_height += THINKING_LAYER_HEIGHT + 5;
-    return;
+    sw->content_height += TAIL_SPACE;
+  } else {
+    GRect frame = layer_get_frame(sw->thinking_layer);
+    frame.origin.y = sw->content_height - TAIL_HEIGHT;
+    layer_set_frame(sw->thinking_layer, frame);
   }
-
-  GRect frame = layer_get_frame(sw->thinking_layer);
-  frame.origin.y = sw->content_height - THINKING_LAYER_HEIGHT - 5;
-  layer_set_frame(sw->thinking_layer, frame);
+  thinking_layer_set_color(sw->thinking_layer, working ? SQUIRE_COLOR_AZURE : SQUIRE_COLOR_MUTED);
+  thinking_layer_set_hint(sw->thinking_layer, working ? NULL : TAIL_HINT);
 }
 
 static int16_t prv_content_height(const SessionWindow* sw) {
   if (sw->thinking_layer) {
-    return sw->content_height - THINKING_LAYER_HEIGHT - 5;
+    return sw->content_height - TAIL_SPACE;
   }
   return sw->content_height;
 }
@@ -717,18 +742,15 @@ static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context
       }
     }
   }
-  action_menu_level_add_action(action_menu, "Dictate", prv_action_menu_query, NULL);
+  action_menu_level_add_action(action_menu, "Speak a reply", prv_action_menu_query, NULL);
   action_menu_level_set_separator_index(action_menu, separator_index);
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = action_menu,
-    .colors = {
-      .background = BRANDED_BACKGROUND_COLOUR,
-      .foreground = gcolor_legible_over(BRANDED_BACKGROUND_COLOUR),
-    },
     .align = ActionMenuAlignTop,
     .context = sw,
     .did_close = prv_destroy_action_menu,
   };
+  squire_action_menu_colors(&config);
   vibe_haptic_feedback();
   sw->query_time = time(NULL);
   free(bmalloc(750));

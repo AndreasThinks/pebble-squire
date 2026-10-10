@@ -63,3 +63,10 @@ global.window = global;
 global.window.location = { protocol: 'https:' };
 global.self = global;
 global.window.addEventListener = vi.fn();
+// The queue stamps every message with a transport SEQ; most tests compare
+// payloads without it.
+global.stripSeq = function(msg) {
+  const copy = Object.assign({}, msg);
+  delete copy.SEQ;
+  return copy;
+};

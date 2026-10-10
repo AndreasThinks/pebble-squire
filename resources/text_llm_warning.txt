@@ -1,1 +1,3 @@
-Squire uses an AI language model to respond to your requests. Like all other AI language models, Squire may lie, do the wrong thing, or make offensive or inappropriate comments.
+Squire is your wrist's line to an AI agent you run, such as Hermes or OpenClaw.
+
+Like any AI, your agent can be wrong, take the wrong action, or say something offensive or inappropriate. Double-check anything that matters.

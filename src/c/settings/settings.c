@@ -23,6 +23,7 @@
 #include "../util/auth_flow.h"
 #include "../util/tuple_util.h"
 #include "../util/result_window.h"
+#include "../util/transport.h"
 
 static EventHandle s_event_handle;
 
@@ -61,6 +62,11 @@ void settings_set_telegram_connected(bool connected) {
 
 
 static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
+  // Auth messages push windows; a resend must not push them twice.
+  static TransportReplayGuard s_guard;
+  if (transport_is_replay(&s_guard, iter)) {
+    return;
+  }
   for (Tuple *tuple = dict_read_first(iter); tuple; tuple = dict_read_next(iter)) {
     if (tuple->key == MESSAGE_KEY_QUICK_LAUNCH_BEHAVIOUR) {
       int value = atoi(tuple->value->cstring);
@@ -96,12 +102,14 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
                tuple->key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {
       auth_flow_handle_message(tuple->key, NULL, tuple_get_int32(tuple));
     } else if (tuple->key == MESSAGE_KEY_TELEGRAM_LOGOUT_RESULT) {
+      // Replaces the "Signing out" card pushed from the home screen.
+      result_window_dismiss_progress();
       if (tuple_get_int32(tuple) == 1) {
-        result_window_push("Signed Out", "Signed out of Telegram. This session was ended on Telegram's servers.", NULL, GColorWhite);
+        result_window_push(ResultToneSuccess, "Signed out", "This watch's Telegram session was ended on Telegram's servers.", RESULT_WINDOW_SHORT_MS);
       } else {
-        result_window_push_persistent("Signed Out Locally",
+        result_window_push(ResultToneWarning, "Signed out here only",
             "Squire forgot its Telegram session, but couldn't reach Telegram to end it. Remove \"Squire\" under Telegram > Settings > Devices.",
-            NULL, GColorWhite);
+            RESULT_WINDOW_PERSISTENT);
       }
     }
   }

@@ -315,3 +315,4 @@ exports.disconnect = disconnect;
 exports.getClient = getClient;
 exports.getEventBuilders = getEventBuilders;
 exports.resetClient = resetClient;
+exports.forgetInvalidSession = forgetInvalidSession;

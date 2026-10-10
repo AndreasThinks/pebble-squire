@@ -23,6 +23,7 @@
 #include "../util/logging.h"
 #include "../util/strings.h"
 #include "../util/tuple_util.h"
+#include "../util/transport.h"
 
 #include <pebble-events/pebble-events.h>
 #include <pebble.h>
@@ -37,6 +38,8 @@
 
 struct ConversationManager {
   Conversation* conversation;
+  // Per manager: every subscribed handler sees each message once.
+  TransportReplayGuard replay_guard;
   EventHandle app_message_handle;
   void* context;
   ConversationManagerUpdateHandler handler;
@@ -270,6 +273,10 @@ static void prv_handle_app_message_outbox_failed(DictionaryIterator *iterator, A
 
 static void prv_handle_app_message_inbox_received(DictionaryIterator *iter, void *context) {
   ConversationManager* manager = context;
+  if (transport_is_replay(&manager->replay_guard, iter)) {
+    // The phone resent something we already applied (its ack was lost).
+    return;
+  }
   Tuple* request = dict_find(iter, MESSAGE_KEY_REQUEST_ID);
   if (request) {
     if (!manager->request_pending || tuple_get_int32(request) != manager->request_id) {

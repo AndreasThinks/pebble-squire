@@ -19,14 +19,20 @@
 
 #include <pebble.h>
 
-// These are recommendations - it will scale to any size.
+// The dots' size. A larger layer centres them.
 #define THINKING_LAYER_WIDTH 48
 #define THINKING_LAYER_HEIGHT 15
 
 typedef Layer ThinkingLayer;
 
-
+// Three dots; one at a time steps forward a few times a second. A stepped
+// timer rather than a 30fps animation keeps long agent waits cheap on battery.
 ThinkingLayer* thinking_layer_create(GRect rect);
 void thinking_layer_destroy(ThinkingLayer *layer);
+void thinking_layer_set_color(ThinkingLayer *layer, GColor color);
+// Swaps the dots for a still "press SELECT" glyph and hint text (a string
+// literal or otherwise long-lived), stopping the timer. NULL brings the dots
+// back. Lets one layer mark the end of a conversation in both states.
+void thinking_layer_set_hint(ThinkingLayer *layer, const char *hint);
 
 #endif

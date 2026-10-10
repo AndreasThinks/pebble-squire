@@ -19,14 +19,17 @@ function dictBytes(msg) {
 
 describe('MessageQueue', () => {
     let sent;
+    let raw;
     let behaviour;
 
     beforeEach(() => {
         vi.useFakeTimers();
         sent = [];
+        raw = [];
         behaviour = () => 'ok';
         global.Pebble.sendAppMessage = vi.fn((msg, success, failure) => {
-            sent.push(msg);
+            raw.push(msg);
+            sent.push(stripSeq(msg));
             const result = behaviour(msg, sent.length);
             if (result === 'ok') success();
             else if (result === 'fail') failure();
@@ -95,7 +98,7 @@ describe('MessageQueue', () => {
     it('ignores a late callback from a timed-out attempt', async () => {
         const callbacks = [];
         global.Pebble.sendAppMessage = vi.fn((msg, success) => {
-            sent.push(msg);
+            sent.push(stripSeq(msg));
             callbacks.push(success);
             if (sent.length > 1) success();
         });
@@ -105,6 +108,99 @@ describe('MessageQueue', () => {
         callbacks[0]();  // the first attempt finally acks, after the retry
         await vi.runAllTimersAsync();
         expect(sent.map(m => m.CHAT)).toEqual(['a', 'a', 'b']);
+    });
+
+    describe('ambiguous delivery', () => {
+        // A minimal model of the watch: applies CHAT text unless the message
+        // repeats the SEQ it applied last (src/c/util/transport.c).
+        function watchModel() {
+            const model = { text: '', lastSeq: null };
+            model.receive = (msg) => {
+                if (msg.SEQ !== undefined && msg.SEQ === model.lastSeq) return;
+                if (msg.SEQ !== undefined) model.lastSeq = msg.SEQ;
+                if (typeof msg.CHAT === 'string') model.text += msg.CHAT;
+            };
+            return model;
+        }
+
+        it('resends with the same SEQ after a lost ack, so the watch can drop the copy', async () => {
+            const watch = watchModel();
+            const callbacks = [];
+            global.Pebble.sendAppMessage = vi.fn((msg, success) => {
+                raw.push(msg);
+                watch.receive(msg);          // every attempt is delivered...
+                callbacks.push(success);
+                if (raw.length > 1) success(); // ...but the first ack is lost
+            });
+            Queue.enqueue({ CHAT: 'Hello ' }, { group: 'g' });
+            Queue.enqueue({ CHAT: 'world' }, { group: 'g' });
+            await vi.advanceTimersByTimeAsync(16000);
+            callbacks[0]();                  // the lost ack turns up late
+            await vi.runAllTimersAsync();
+            expect(raw.map(m => m.CHAT)).toEqual(['Hello ', 'Hello ', 'world']);
+            expect(raw[0].SEQ).toBe(raw[1].SEQ);
+            expect(raw[2].SEQ).not.toBe(raw[1].SEQ);
+            expect(watch.text).toBe('Hello world');
+        });
+
+        it('gives every message and every chunk its own SEQ, within the inbox size', () => {
+            Queue.enqueue({ CHAT: 'x'.repeat(9000), REQUEST_ID: 3 });
+            Queue.enqueue({ CHAT_DONE: 1 });
+            const seqs = raw.map(m => m.SEQ);
+            expect(seqs.every(n => Number.isInteger(n) && n > 0)).toBe(true);
+            expect(new Set(seqs).size).toBe(seqs.length);
+            for (const m of raw) expect(dictBytes(m)).toBeLessThanOrEqual(5000);
+        });
+    });
+
+    describe('budget', () => {
+        it('rejects a group explicitly when the queue is full, then recovers', async () => {
+            behaviour = () => 'hang';
+            const onFailed = vi.fn();
+            Queue.enqueue({ CHAT: 'head' }, { group: 'a' });
+            let accepted = 0;
+            for (let i = 0; i < 1000; i++) {
+                if (!Queue.enqueue({ CHAT: 'y'.repeat(400) }, { group: 'b', onFailed })) break;
+                accepted++;
+            }
+            expect(accepted).toBeLessThan(1000);
+            expect(Queue.size()).toBeLessThanOrEqual(queueModule.MAX_QUEUE_ITEMS);
+            expect(Queue.bytes()).toBeLessThanOrEqual(queueModule.MAX_QUEUE_BYTES);
+            expect(onFailed).toHaveBeenCalledTimes(1);
+            // The failed group's queued messages were dropped to make room.
+            expect(Queue.size()).toBe(1);
+            // A terminal report for the failed group still gets through.
+            expect(Queue.enqueue({ WARNING: 'too long', CHAT_DONE: 1 }, { group: 'b', terminal: true })).toBe(true);
+            // The in-flight head is untouched and completes normally.
+            behaviour = () => 'ok';
+            await vi.advanceTimersByTimeAsync(16000);
+            await vi.runAllTimersAsync();
+            expect(sent.filter(m => m.CHAT === 'head').length).toBe(2);
+            expect(sent[sent.length - 1]).toEqual({ WARNING: 'too long', CHAT_DONE: 1 });
+            expect(Queue.size()).toBe(0);
+            expect(Queue.enqueue({ CHAT: 'after recovery' }, { group: 'c' })).toBe(true);
+            expect(sent[sent.length - 1]).toEqual({ CHAT: 'after recovery' });
+        });
+
+        it('drops ungrouped messages over budget with an explicit false', () => {
+            behaviour = () => 'hang';
+            let results = [];
+            for (let i = 0; i < queueModule.MAX_QUEUE_ITEMS + 5; i++) {
+                results.push(Queue.enqueue({ HISTORY_PROMPT: 'p' + i }));
+            }
+            expect(results.filter(r => r === false).length).toBeGreaterThan(0);
+            expect(Queue.size()).toBeLessThanOrEqual(queueModule.MAX_QUEUE_ITEMS);
+        });
+
+        it('never splits a message across the budget: all chunks or none', () => {
+            behaviour = () => 'hang';
+            const onFailed = vi.fn();
+            Queue.enqueue({ CHAT: 'z'.repeat(queueModule.MAX_QUEUE_BYTES - 6000) }, { group: 'a' });
+            const before = Queue.size();
+            expect(Queue.enqueue({ CHAT: 'w'.repeat(12000) }, { group: 'b', onFailed })).toBe(false);
+            expect(Queue.size()).toBe(before);
+            expect(onFailed).toHaveBeenCalledTimes(1);
+        });
     });
 
     it('purges queued messages of a cancelled group', () => {

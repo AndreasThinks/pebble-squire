@@ -25,7 +25,6 @@
 #include "menus/sample_prompts_menu.h"
 #include "util/logging.h"
 #include "util/style.h"
-#include "util/thinking_layer.h"
 #include "util/memory/malloc.h"
 #include "util/memory/sdk.h"
 #include "util/result_window.h"
@@ -46,6 +45,18 @@ static const char* const PRV_GREETINGS[] = {
   "Oi!",
 };
 #define PRV_GREETINGS_COUNT 10
+
+// One line in the speech bubble under the greeting; keep within the bubble's
+// width on 144px screens or the squire gets pushed off the bottom.
+#if PBL_DISPLAY_WIDTH >= 200
+#define CAPTION_READY "Ask me anything"
+#define CAPTION_SIGNED_OUT "Let's sign you in"
+#define CAPTION_UNSUPPORTED "Phone app unsupported"
+#else
+#define CAPTION_READY "Ask away!"
+#define CAPTION_SIGNED_OUT "Sign in first"
+#define CAPTION_UNSUPPORTED "Unsupported app"
+#endif
 
 struct RootWindow {
   Window* window;
@@ -71,6 +82,8 @@ static void prv_more_clicked(ClickRecognizerRef recognizer, void* context);
 static void prv_up_clicked(ClickRecognizerRef recognizer, void *context);
 static void prv_action_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context);
 static void prv_menu_about(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
+static void prv_menu_resume(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
+static void prv_menu_sign_in(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
 static void prv_menu_disconnect(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
 static void prv_disconnect_confirm_selected(ActionMenu *action_menu, const ActionMenuItem *action, void *context);
 static void prv_disconnect_confirm_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context);
@@ -110,7 +123,7 @@ static void prv_window_appear(Window* window) {
   size_t heap_size = heap_bytes_free();
   RootWindow* rw = window_get_user_data(window);
   GRect bounds = layer_get_bounds(window_get_root_layer(rw->window));
-  window_set_background_color(rw->window, COLOR_FALLBACK(ACCENT_COLOUR, GColorWhite));
+  window_set_background_color(rw->window, SQUIRE_COLOR_FIELD);
   rw->question_icon = bgbitmap_create_with_resource(RESOURCE_ID_QUESTION_ICON);
   rw->dictation_icon = bgbitmap_create_with_resource(RESOURCE_ID_DICTATION_ICON);
   rw->more_icon = bgbitmap_create_with_resource(RESOURCE_ID_MORE_ICON);
@@ -119,6 +132,9 @@ static void prv_window_appear(Window* window) {
   action_bar_layer_set_icon(rw->action_bar, BUTTON_ID_UP, rw->question_icon);
   action_bar_layer_set_icon(rw->action_bar, BUTTON_ID_SELECT, rw->dictation_icon);
   action_bar_layer_set_icon(rw->action_bar, BUTTON_ID_DOWN, rw->more_icon);
+  // A deeper shade of the field, so the bar reads as part of the same
+  // heraldic surface rather than a black slab.
+  action_bar_layer_set_background_color(rw->action_bar, COLOR_FALLBACK(GColorOxfordBlue, GColorBlack));
   action_bar_layer_add_to_window(rw->action_bar, window);
   action_bar_layer_set_click_config_provider(rw->action_bar, prv_click_config_provider);
 #ifdef PBL_ROUND
@@ -126,10 +142,16 @@ static void prv_window_appear(Window* window) {
 #else
   rw->talking_squire_layer = talking_squire_layer_create(GRect(0, 0, bounds.size.w - ACTION_BAR_WIDTH, bounds.size.h));
 #endif
-  layer_add_child(window_get_root_layer(rw->window), (Layer *)rw->talking_squire_layer);
   rw->talking_squire_overridden = false;
-  const char* greeting = PRV_GREETINGS[rand() % PRV_GREETINGS_COUNT];
-  talking_squire_layer_set_text(rw->talking_squire_layer, greeting);
+  if (rw->talking_squire_layer) {
+    layer_add_child(window_get_root_layer(rw->window), (Layer *)rw->talking_squire_layer);
+    const char* greeting = PRV_GREETINGS[rand() % PRV_GREETINGS_COUNT];
+    talking_squire_layer_set_text(rw->talking_squire_layer, greeting);
+    // Beside the SELECT (microphone) button, the squire says what it will do,
+    // so the first press is never a surprise: before sign-in it signs in.
+    talking_squire_layer_set_caption(rw->talking_squire_layer,
+        settings_is_telegram_connected() ? CAPTION_READY : CAPTION_SIGNED_OUT);
+  }
 
   if (!rw->app_message_handle) {
     rw->app_message_handle = events_app_message_register_inbox_received(prv_app_message_handler, rw);
@@ -148,7 +170,10 @@ static void prv_window_disappear(Window* window) {
   gbitmap_destroy(rw->question_icon);
   gbitmap_destroy(rw->dictation_icon);
   gbitmap_destroy(rw->more_icon);
-  talking_squire_layer_destroy(rw->talking_squire_layer);
+  if (rw->talking_squire_layer) {
+    talking_squire_layer_destroy(rw->talking_squire_layer);
+    rw->talking_squire_layer = NULL;
+  }
   SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "Window disappeared. Heap usage decreased %d bytes", heap_bytes_free() - heap_size);
 }
 
@@ -160,8 +185,11 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
   }
   if (tuple->value->int32 == 1) {
     rw->talking_squire_overridden = true;
-    talking_squire_layer_set_text(rw->talking_squire_layer, "Uh oh!");
-    window_set_background_color(rw->window, COLOR_FALLBACK(GColorVeryLightBlue, GColorDarkGray));
+    if (rw->talking_squire_layer) {
+      talking_squire_layer_set_text(rw->talking_squire_layer, "Uh oh!");
+      talking_squire_layer_set_caption(rw->talking_squire_layer, CAPTION_UNSUPPORTED);
+    }
+    window_set_background_color(rw->window, SQUIRE_COLOR_FIELD_OFFLINE);
     vibe_haptic_feedback();
   }
 }
@@ -178,7 +206,6 @@ static void prv_click_config_provider(void *context) {
 #define HISTORY_WAIT_TIMEOUT_MS 15000
 
 static Window *s_loading_window = NULL;
-static ThinkingLayer *s_loading_thinking_layer = NULL;
 static AppTimer *s_loading_timer = NULL;
 static bool s_waiting_for_history = false;
 
@@ -193,23 +220,18 @@ static void prv_stop_waiting_for_history(void) {
   }
 }
 
-static void prv_loading_window_unload(Window *window) {
-  // Backing out of the loading screen abandons the wait: don't open a
+static void prv_loading_window_closed(Window *window) {
+  // Backing out of the loading card abandons the wait: don't open a
   // conversation later when history eventually arrives.
-  prv_stop_waiting_for_history();
-  if (s_loading_thinking_layer) {
-    thinking_layer_destroy(s_loading_thinking_layer);
-    s_loading_thinking_layer = NULL;
-  }
-  window_destroy(s_loading_window);
   s_loading_window = NULL;
+  prv_stop_waiting_for_history();
 }
 
 static void prv_open_conversation_after_wait(void) {
   prv_stop_waiting_for_history();
   if (s_loading_window) {
-    window_stack_remove(s_loading_window, true);
-    // Unload handler will destroy resources
+    // The closed handler forgets the window.
+    window_stack_remove(s_loading_window, false);
   }
   if (history_is_available()) {
     session_window_push_with_history(0, NULL, history_get_thread_id());
@@ -232,35 +254,24 @@ static void prv_history_wait_timed_out(void *context) {
 
 static void prv_push_loading_window(void) {
   if (s_loading_window) return;
-  Window *window = bwindow_create();
-  if (!window) {
+  s_loading_window = result_window_push(ResultToneProgress, "Opening chat",
+      "Fetching your recent messages from Telegram.", RESULT_WINDOW_PERSISTENT);
+  if (!s_loading_window) {
     prv_open_conversation_after_wait();
     return;
   }
-  s_loading_window = window;
-  window_set_window_handlers(window, (WindowHandlers) {
-    .unload = prv_loading_window_unload,
-  });
-  window_set_background_color(window, BRANDED_BACKGROUND_COLOUR);
-  Layer *root_layer = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(root_layer);
-  s_loading_thinking_layer = thinking_layer_create(GRect(
-    (bounds.size.w - THINKING_LAYER_WIDTH) / 2,
-    (bounds.size.h - THINKING_LAYER_HEIGHT) / 2,
-    THINKING_LAYER_WIDTH,
-    THINKING_LAYER_HEIGHT));
-  if (s_loading_thinking_layer) {
-    layer_add_child(root_layer, s_loading_thinking_layer);
-  }
-  window_stack_push(window, true);
+  result_window_set_closed_handler(s_loading_window, prv_loading_window_closed);
 }
 
 static void prv_up_clicked(ClickRecognizerRef recognizer, void *context) {
   sample_prompts_menu_push();
 }
 
-static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context) {
-  if (history_is_available()) {
+static void prv_resume_conversation(void) {
+  if (!settings_is_telegram_connected()) {
+    // Starts sign-in; there's nothing to resume yet.
+    session_window_push(0, NULL);
+  } else if (history_is_available()) {
     session_window_push_with_history(0, NULL, history_get_thread_id());
   } else if (history_is_loading()) {
     // Wait (boundedly) for history to finish loading before deciding whether
@@ -278,6 +289,10 @@ static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context
   }
 }
 
+static void prv_select_long_pressed(ClickRecognizerRef recognizer, void *context) {
+  prv_resume_conversation();
+}
+
 static void prv_action_menu_closed(ActionMenu *action_menu, const ActionMenuItem *performed_action, void *context) {
   action_menu_hierarchy_destroy(action_menu_get_root_level(action_menu), NULL, NULL);
 }
@@ -289,21 +304,30 @@ static void prv_prompt_clicked(ClickRecognizerRef recognizer, void *context) {
 
 static void prv_more_clicked(ClickRecognizerRef recognizer, void* context) {
   RootWindow* rw = context;
-  // About + Disconnect (with separator before Disconnect)
-  ActionMenuLevel *level = baction_menu_level_create(2);
-  action_menu_level_add_action(level, "About", prv_menu_about, NULL);
-  action_menu_level_set_separator_index(level, 1);
-  action_menu_level_add_action(level, "Disconnect", prv_menu_disconnect, rw);
+  const bool connected = settings_is_telegram_connected();
+  // The More menu doubles as a map of the app: the hidden long-press
+  // shortcut is also listed here by name.
+  ActionMenuLevel *level = baction_menu_level_create(3);
+  if (!level) {
+    return;
+  }
+  if (connected) {
+    action_menu_level_add_action(level, "Resume last chat", prv_menu_resume, rw);
+  }
+  action_menu_level_add_action(level, "About Squire", prv_menu_about, NULL);
+  action_menu_level_set_separator_index(level, connected ? 2 : 1);
+  if (connected) {
+    action_menu_level_add_action(level, "Sign out", prv_menu_disconnect, rw);
+  } else {
+    action_menu_level_add_action(level, PBL_IF_ROUND_ELSE("Sign in", "Sign in to Telegram"), prv_menu_sign_in, rw);
+  }
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = level,
-    .colors = {
-      .background = BRANDED_BACKGROUND_COLOUR,
-      .foreground = gcolor_legible_over(BRANDED_BACKGROUND_COLOUR),
-    },
     .align = ActionMenuAlignTop,
     .context = rw,
     .did_close = prv_action_menu_closed,
   };
+  squire_action_menu_colors(&config);
   action_menu_open(&config);
 }
 
@@ -311,25 +335,33 @@ static void prv_menu_about(ActionMenu *action_menu, const ActionMenuItem *action
   about_window_push();
 }
 
+static void prv_menu_resume(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
+  prv_resume_conversation();
+}
+
+static void prv_menu_sign_in(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
+  session_window_push(0, NULL);
+}
+
 static void prv_menu_disconnect(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
   RootWindow* rw = context;
   if (!settings_is_telegram_connected()) {
-    result_window_push("Not Connected", "Telegram is not currently connected.", NULL, GColorWhite);
+    result_window_push(ResultToneInfo, "Not signed in", "Squire isn't signed in to Telegram.", RESULT_WINDOW_SHORT_MS);
     return;
   }
   ActionMenuLevel *confirm_level = baction_menu_level_create(2);
-  action_menu_level_add_action(confirm_level, "Disconnect", prv_disconnect_confirm_selected, (void*)true);
-  action_menu_level_add_action(confirm_level, "Cancel", prv_disconnect_confirm_selected, (void*)false);
+  if (!confirm_level) {
+    return;
+  }
+  action_menu_level_add_action(confirm_level, "Sign out", prv_disconnect_confirm_selected, (void*)true);
+  action_menu_level_add_action(confirm_level, "Stay signed in", prv_disconnect_confirm_selected, (void*)false);
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = confirm_level,
-    .colors = {
-      .background = BRANDED_BACKGROUND_COLOUR,
-      .foreground = gcolor_legible_over(BRANDED_BACKGROUND_COLOUR),
-    },
     .align = ActionMenuAlignCenter,
     .context = rw,
     .did_close = prv_disconnect_confirm_menu_closed,
   };
+  squire_action_menu_colors(&config);
   rw->disconnect_confirmed = false;
   rw->disconnect_confirm_menu = action_menu_open(&config);
 }
@@ -349,9 +381,10 @@ static void prv_disconnect_confirm_menu_closed(ActionMenu *action_menu, const Ac
     if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
       dict_write_int8(iter, MESSAGE_KEY_TELEGRAM_DISCONNECT, 1);
       app_message_outbox_send();
-      result_window_push("Disconnecting", "Signing out of Telegram...", NULL, GColorWhite);
+      // Replaced by the outcome card when the phone reports back.
+      result_window_push(ResultToneProgress, "Signing out", "Ending this watch's Telegram session.", RESULT_WINDOW_PERSISTENT);
     } else {
-      result_window_push("Error", "Could not reach phone. Try again.", NULL, GColorWhite);
+      result_window_push_phone_unreachable();
     }
   }
 }

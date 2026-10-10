@@ -67,6 +67,9 @@ var AUTH_DC = {
 };
 
 var authInProgress = false;
+// Identifies the current holder of the auth lock, so a step abandoned by
+// logout() can't release a lock taken by a newer sign-in.
+var lockToken = null;
 var pending = null;
 var generation = 0;
 
@@ -76,12 +79,21 @@ function AuthError(reason, message) {
     return err;
 }
 
+function release(token) {
+    if (lockToken === token) {
+        lockToken = null;
+        authInProgress = false;
+    }
+}
+
 function withAuthLock(fn) {
     return function() {
         if (authInProgress) {
             return Promise.reject(AuthError(REASONS.GENERIC, 'Authentication already in progress'));
         }
         authInProgress = true;
+        var token = {};
+        lockToken = token;
         var mine = generation;
         var args = arguments;
         return Promise.resolve()
@@ -92,10 +104,10 @@ function withAuthLock(fn) {
                 return fn.apply(null, args);
             })
             .then(function(result) {
-                authInProgress = false;
+                release(token);
                 return result;
             }, function(err) {
-                authInProgress = false;
+                release(token);
                 throw err;
             });
     };
@@ -398,6 +410,10 @@ function checkConnection() {
  */
 function logout() {
     generation++;
+    // An in-flight step's result is discarded (generation changed); don't let
+    // it block the next sign-in until it eventually settles.
+    lockToken = null;
+    authInProgress = false;
     clearPending();
     return client.disconnect().then(function(result) {
         clearPending();

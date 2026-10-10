@@ -31,7 +31,7 @@ describe('config page', () => {
 
     beforeEach(() => {
         sent = [];
-        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(msg); ok(); });
+        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(stripSeq(msg)); ok(); });
         Queue.reset();
         localStorage.clear();
         localStorage.setItem.mockClear();

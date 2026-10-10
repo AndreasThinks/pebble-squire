@@ -86,7 +86,7 @@ static void prv_window_load(Window* window) {
   window_set_background_color(window, GColorWhite);
 
   data->status_bar = bstatus_bar_layer_create();
-  status_bar_layer_set_colors(data->status_bar, GColorWhite, GColorBlack);
+  squire_status_bar_config(data->status_bar);
   layer_add_child(root_layer, status_bar_layer_get_layer(data->status_bar));
 
   data->scroll_layer = bscroll_layer_create(GRect(0, STATUS_BAR_LAYER_HEIGHT, window_bounds.size.w, window_bounds.size.h - STATUS_BAR_LAYER_HEIGHT));
@@ -97,7 +97,7 @@ static void prv_window_load(Window* window) {
 #ifdef PBL_PLATFORM_GABBRO
   const int16_t text_margin = 40;
 #else
-  const int16_t text_margin = 5;
+  const int16_t text_margin = SQUIRE_SPACE_M + SQUIRE_ROUND_INSET;
 #endif
   data->text_layer = formatted_text_layer_create(GRect(text_margin, 0, window_bounds.size.w - text_margin * 2, 10000));
   formatted_text_layer_set_text_alignment(data->text_layer, GTextAlignmentCenter);

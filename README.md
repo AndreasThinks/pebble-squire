@@ -70,8 +70,8 @@ Set **both** repository secrets `TELEGRAM_APP_ID` and `TELEGRAM_APP_HASH` to pro
    - **Watch:** start a conversation, enter the phone number's digits including country code (the watch adds `+`), then enter the code sent by Telegram. UP/DOWN changes the digit, SELECT adds it, BACK deletes it, and holding SELECT opens confirmation.
    - **Phone settings:** enter the number in international format, save, then reopen settings and enter the login code within 15 minutes. Save again.
    - **Two-step verification:** enter the cloud password in the phone settings. You may supply it with the code, or on a later visit after Squire asks for it. The password stage expires after 30 minutes.
-4. Open a conversation again after sign-in. SELECT dictates a prompt. UP on the home screen opens recent prompts (or sample prompts when there is no history); holding SELECT resumes recent history when available. Only one agent request is active at a time.
-5. **Disconnect** in the home screen's More menu signs out. Squire attempts server-side session revocation and always forgets its local session. If Telegram cannot be reached, remove the Squire session manually under **Telegram → Settings → Devices**.
+4. Open a conversation again after sign-in. SELECT dictates a prompt. UP on the home screen opens recent prompts (or sample prompts when there is no history); holding SELECT, or **Resume last chat** in the More menu (DOWN), resumes recent history when available. In a conversation, SELECT speaks a reply and holding SELECT offers quick replies. Only one agent request is active at a time.
+5. **Sign out** in the home screen's More menu signs out. Squire attempts server-side session revocation and always forgets its local session. If Telegram cannot be reached, remove the Squire session manually under **Telegram → Settings → Devices**.
 
 Quick launch can open the home screen, start a conversation and stay open, or close after a minute of inactivity. It does not close while a request is still pending. The confirm-prompts setting lets you review dictation before sending.
 
@@ -82,6 +82,12 @@ Squire prepends a `<system>...</system>` block asking for concise watch-sized an
 Replies are accepted only from the configured bot's private chat, after the prompt was sent. Consecutive messages are joined with blank lines. Message edits update the displayed reply; non-append edits replace the transcript. Media-only replies show a placeholder directing you to Telegram.
 
 End the final reply with **`[done]`** for reliable completion of multi-part responses. Squire strips that trailing marker and finishes immediately. Otherwise, it finishes after **10 seconds** without messages, edits or typing activity. Once that bot has used `[done]`, the quiet window increases to **60 seconds**. It waits up to **2 minutes of silence** before the first reply and up to **5 minutes overall**, including connecting and sending. Later replies and edits remain visible in Telegram but do not reopen a finished watch request.
+
+Only one request is outstanding at a time, across conversations. Once a prompt has been sent to Telegram, a new prompt (even from a reopened conversation) is refused with "Still waiting for the agent to answer your previous request" until that request finishes: its reply completes, it fails or it times out (at most 5 minutes). Bots rarely mark which message they answer, so a late reply could not otherwise be told apart from an answer to the new prompt. A prompt that hasn't reached Telegram yet is simply replaced. This narrows, but cannot remove, misattribution: a bot that keeps sending after its reply was judged complete (no `[done]`, more than the quiet window later), or that posts unprompted messages, will have those messages shown as the answer to the next prompt. End replies with `[done]` and reply-to the prompt if your backend can.
+
+Phone-to-watch messages carry a sequence number (`SEQ`). If the phone resends a message whose acknowledgement was lost, the watch recognises and ignores the copy, so reply text is never duplicated. The phone's outgoing queue is bounded (48 messages, 32 KB). A reply that doesn't fit ends with "The reply was too long to send to the watch. Read the rest in Telegram."
+
+If the phone has no Telegram session, or Telegram rejects it (revoked or expired), a prompt is answered with a sign-in message and the watch is marked signed out, so its home screen offers sign-in again.
 
 Recent history contains at most eight entries, oldest first, with each entry truncated on a UTF-8 boundary to fit the watch. Fetch or delivery failures clear partial history; a stalled fetch times out after one minute. Signing out clears the watch's fetched history; it does not delete the chat in Telegram.
 
@@ -98,12 +104,15 @@ npm run verify:telegram
 npm run smoke:telegram
 ```
 
+The watch's visual design, palette and screen flow are documented in [docs/DESIGN.md](docs/DESIGN.md).
+
 The JavaScript tests use offline Telegram and Pebble fakes. The C tests exercise conversation storage, request correlation, watchdogs, history, formatted-text rendering and allocation failures with AddressSanitizer and UndefinedBehaviorSanitizer, without needing the SDK. The bundle checks rebuild to temporary files, compare the committed checksum and exercise a PebbleKit-like runtime.
 
 For changes to the bundle inputs, see [scripts/README.md](scripts/README.md). Regenerate with `npm run build:telegram`, then commit both `src/pkjs/lib/telegram-bundle.js` and `scripts/telegram-bundle.sha256`. Do not hand-edit the generated bundle. Root dependencies have no tracked lockfile; `scripts/package-lock.json` pins the bundle dependencies.
 
 ```text
 src/c/                 Watch UI, conversations, auth and memory handling
+docs/DESIGN.md         Design rationale: palette, type, screens and flow
 src/pkjs/              Phone settings, location, history and agent sessions
 src/pkjs/telegram/     Telegram client, sign-in and session storage
 resources/             Watch icons, animations and consent text
@@ -111,6 +120,28 @@ scripts/               Reproducible Telegram bundle tooling
 tests/                 Offline JavaScript and host C regression tests
 wscript                Watch build and Telegram credential injection
 ```
+
+### Real-device test checklist
+
+Automated tests and emulator screenshots can't cover these; check them on a watch with a sign-in-ready build (one built with real `TELEGRAM_APP_ID`/`TELEGRAM_APP_HASH`; an offline development build reports "not configured" at sign-in).
+
+- [ ] **First launch:** onboarding pages, location Allow and Don't allow, then the home screen.
+- [ ] **Sign-in on the watch:** phone number, login code, wrong code (re-entry), expired code; and the "Signed in" card names the right bot.
+- [ ] **Two-step verification:** password entered in phone settings completes a watch-started sign-in.
+- [ ] **Sign-in from phone settings**, including the code entered on a later visit.
+- [ ] **Dictation:** SELECT on home, confirm-transcripts on and off, cancelled dictation.
+- [ ] **Replies:** a fast reply; a slow (over 10 s) reply; a multi-part reply ending in `[done]`; a reply the bot edits; a media-only reply.
+- [ ] **Isolation:** an unrelated DM, and a message in another chat, arriving while waiting; neither appears on the watch.
+- [ ] **Bluetooth:** disconnect while waiting and while a reply streams in; reconnect; the watch reports the failure rather than hanging.
+- [ ] **History:** reopen the app, hold SELECT (and More → Resume last chat) during and after history loading; UP → Ask again.
+- [ ] **Repeat sessions:** several prompts in one conversation, quick replies, retrying after an error.
+- [ ] **Overlap:** close and reopen a conversation mid-request, then ask again; the new prompt is refused until the first request finishes, then works.
+- [ ] **Location consent without the phone:** with Bluetooth off, choose a location option during onboarding; after about 15 s an error card appears and SELECT offers the choice again.
+- [ ] **Bot change:** change the bot username in settings mid-reply; the watch says why the request ended.
+- [ ] **Sign out:** More → Sign out with and without network; check Telegram → Settings → Devices.
+- [ ] **Quick launch:** each quick-launch setting; the one-minute timeout never closes mid-reply.
+- [ ] **Low memory:** a very long reply and a long conversation on basalt or diorite.
+- [ ] **Every platform:** layout on each watch you have, especially gabbro (no new-design emulator screenshots).
 
 ### Troubleshooting
 

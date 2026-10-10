@@ -1,11 +1,10 @@
-What's the weather like?
-Will I need an umbrella tomorrow?
-Who was the 22nd president of the United States?
-What is 50 dollars in pounds?
-How do you say 'good morning' in German?
-How long would it take to drive to McDonald's?
-What is 47 squared?
-Where is the nearest bar that's open?
-What is the capital of Burkina Faso?
-What is the population of Germany?
-What is the speed of light?
+What's on my calendar today?
+Remind me to stretch at 3pm
+Any messages I should know about?
+What's the weather this afternoon?
+Add milk to my shopping list
+Summarise today's news
+Draft a reply: running ten minutes late
+What's 15% of 64?
+How do I say thank you in Japanese?
+Where's the nearest open pharmacy?

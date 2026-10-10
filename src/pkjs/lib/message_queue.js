@@ -23,6 +23,16 @@
 // (e.g. one agent reply), the rest of that group is discarded and the
 // group's onFailed callback runs, so a reply is never shown with a hole in
 // it and presented as complete.
+//
+// A timed-out send is ambiguous: the watch may have applied it and only the
+// ack was lost. Every message therefore carries a SEQ number that stays the
+// same when it is resent, and the watch ignores a message repeating the SEQ
+// it applied last (src/c/util/transport.c). Because only the head is ever
+// resent, "the last one" is the only possible duplicate.
+//
+// The queue has a hard budget. A message that doesn't fit is refused whole
+// (enqueue returns false); for a group that fails the group, whose terminal
+// report may use a small reserve so the watch still hears why.
 
 // The watch requests a 5000-byte inbox (SQUIRE_APP_MESSAGE_BUFFER_SIZE in
 // src/c/converse/conversation_manager.c). A dictionary costs 1 byte, plus 7
@@ -37,6 +47,16 @@ var MAX_MESSAGE_BYTES = WATCH_INBOX_BYTES - SAFETY_MARGIN_BYTES;
 // Keep individual CHAT chunks modest: every byte of a chunk must also fit in
 // the watch's heap alongside the reply it's appended to.
 var MAX_CHAT_CHUNK_BYTES = 4000;
+
+var MAX_QUEUE_ITEMS = 48;
+// Room for a full 4096-character Telegram message in 4-byte UTF-8, twice over.
+var MAX_QUEUE_BYTES = 32768;
+var TERMINAL_RESERVE_ITEMS = 8;
+var TERMINAL_RESERVE_BYTES = 2048;
+
+// SEQ is an int32 tuple on every message.
+var SEQ_BYTES = TUPLE_HEADER_BYTES + 4;
+var MAX_SEQ = 0x7fffffff;
 
 var MAX_SEND_ATTEMPTS = 4;
 var RETRY_BASE_DELAY_MS = 250;
@@ -199,7 +219,7 @@ function splitMessage(message) {
                 others[k] = message[k];
             }
         }
-        var overhead = messageBytes(merge(sticky, others)) + TUPLE_HEADER_BYTES + 1;
+        var overhead = messageBytes(merge(sticky, others)) + TUPLE_HEADER_BYTES + 1 + SEQ_BYTES;
         var budget = Math.min(MAX_CHAT_CHUNK_BYTES, MAX_MESSAGE_BYTES - overhead);
         if (utf8Length(text) <= budget) {
             return [message];
@@ -230,8 +250,17 @@ function describe(message) {
 }
 
 function MessageQueue() {
+    // A fresh random start after a PebbleKit JS restart, so a new message is
+    // never mistaken for a resend of the last one before the restart.
+    this.nextSeq = 1 + Math.floor(Math.random() * (MAX_SEQ / 2));
     this.reset();
 }
+
+MessageQueue.prototype.takeSeq = function() {
+    var seq = this.nextSeq;
+    this.nextSeq = seq >= MAX_SEQ ? 1 : seq + 1;
+    return seq;
+};
 
 MessageQueue.prototype.reset = function() {
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -252,27 +281,47 @@ MessageQueue.prototype.reset = function() {
 MessageQueue.prototype.enqueue = function(message, options) {
     options = options || {};
     var group = options.group !== undefined ? options.group : null;
-    if (group !== null && this.failedGroups[group] && !options.terminal) {
-        return;
+    var terminal = !!options.terminal;
+    if (group !== null && this.failedGroups[group] && !terminal) {
+        return false;
     }
     var parts = splitMessage(sanitizeMessage(message));
+    var items = [];
+    var addedBytes = 0;
     for (var i = 0; i < parts.length; i++) {
+        parts[i].SEQ = this.takeSeq();
         var item = {
             message: parts[i],
+            bytes: messageBytes(parts[i]),
             group: group,
-            terminal: !!options.terminal,
+            terminal: terminal,
             onFailed: options.onFailed || null,
             attempts: 0
         };
-        if (messageBytes(item.message) > MAX_MESSAGE_BYTES) {
+        if (item.bytes > MAX_MESSAGE_BYTES) {
             // Can't be split and would just be dropped by the watch.
             console.error('[queue] message too large for the watch: ' + describe(item.message));
-            this.failItem(item);
-            continue;
+            this.failItem(item, 'too-large');
+            return false;
         }
-        this.queue.push(item);
+        items.push(item);
+        addedBytes += item.bytes;
+    }
+    var maxItems = MAX_QUEUE_ITEMS + (terminal ? TERMINAL_RESERVE_ITEMS : 0);
+    var maxBytes = MAX_QUEUE_BYTES + (terminal ? TERMINAL_RESERVE_BYTES : 0);
+    if (this.queue.length + items.length > maxItems || this.bytes() + addedBytes > maxBytes) {
+        console.error('[queue] queue full (' + this.queue.length + ' messages, ' + this.bytes() +
+                      ' bytes); refusing ' + describe(message));
+        if (items.length) {
+            this.failItem(items[0], 'queue-full');
+        }
+        return false;
+    }
+    for (var j = 0; j < items.length; j++) {
+        this.queue.push(items[j]);
     }
     this.pump();
+    return true;
 };
 
 // Drops queued (not yet in-flight) messages of a group, e.g. when a request
@@ -283,8 +332,17 @@ MessageQueue.prototype.purgeGroup = function(group) {
     }, this);
 };
 
+// Includes the in-flight message, which stays at the head until it settles.
 MessageQueue.prototype.size = function() {
     return this.queue.length;
+};
+
+MessageQueue.prototype.bytes = function() {
+    var total = 0;
+    for (var i = 0; i < this.queue.length; i++) {
+        total += this.queue[i].bytes;
+    }
+    return total;
 };
 
 MessageQueue.prototype.pump = function() {
@@ -338,11 +396,13 @@ MessageQueue.prototype.handleFailure = function(item) {
     }
     console.error('[queue] giving up after ' + item.attempts + ' attempts: ' + describe(item.message));
     this.queue.shift();
-    this.failItem(item);
+    this.failItem(item, 'undelivered');
     this.pump();
 };
 
-MessageQueue.prototype.failItem = function(item) {
+// reason: 'undelivered' (the watch never acknowledged it), 'queue-full' or
+// 'too-large'.
+MessageQueue.prototype.failItem = function(item, reason) {
     if (item.group === null || item.terminal) {
         return;
     }
@@ -353,7 +413,7 @@ MessageQueue.prototype.failItem = function(item) {
     this.purgeGroup(item.group);
     if (item.onFailed) {
         try {
-            item.onFailed(item.group);
+            item.onFailed(item.group, reason);
         } catch (err) {
             console.error('[queue] onFailed threw: ' + (err && err.message));
         }
@@ -368,3 +428,5 @@ exports.messageBytes = messageBytes;
 exports.sanitizeString = sanitizeString;
 exports.MAX_MESSAGE_BYTES = MAX_MESSAGE_BYTES;
 exports.MAX_SEND_ATTEMPTS = MAX_SEND_ATTEMPTS;
+exports.MAX_QUEUE_ITEMS = MAX_QUEUE_ITEMS;
+exports.MAX_QUEUE_BYTES = MAX_QUEUE_BYTES;

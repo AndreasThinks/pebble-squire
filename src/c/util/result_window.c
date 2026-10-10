@@ -15,72 +15,189 @@
  */
 
 #include "result_window.h"
-#include "vector_layer.h"
 #include "style.h"
+#include "thinking_layer.h"
+#include "logging.h"
 #include "../util/memory/malloc.h"
 #include <pebble.h>
 
 #include "memory/sdk.h"
 
+#if PBL_DISPLAY_WIDTH >= 200
+#define BAND_HEIGHT 58
+#define GLYPH_RADIUS 18
+#define CARD_TITLE_FONT FONT_KEY_GOTHIC_28_BOLD
+#else
+#define BAND_HEIGHT 46
+#define GLYPH_RADIUS 14
+#define CARD_TITLE_FONT FONT_KEY_GOTHIC_24_BOLD
+#endif
+#define TEXT_INSET (SQUIRE_SPACE_M + SQUIRE_ROUND_INSET)
+#define BOTTOM_PADDING (SQUIRE_SPACE_L + (SQUIRE_ROUND_INSET ? 30 : 0))
+
 typedef struct {
   StatusBarLayer *status_bar;
-  TextLayer* title_layer;
-  TextLayer* text_layer;
-  VectorLayer* image_layer;
-#ifdef PBL_COLOR
-  GColor background_color;
-  GColor text_color;
-#endif
-  char* title_text;
-  char* text_text;
-  GDrawCommandImage* image;
-  AppTimer* timer;
-  bool persistent;
+  ScrollLayer *scroll_layer;
+  Layer *content_layer;
+  ThinkingLayer *thinking_layer;
+  ResultTone tone;
+  char *title_text;
+  char *body_text;
+  int16_t title_height;
+  int16_t body_height;
+  AppTimer *timer;
   uint32_t timeout_ms;
+  ResultWindowClosedHandler closed_handler;
 } ResultWindowData;
+
+// The single live progress card, if any.
+static Window *s_progress_window = NULL;
 
 static void prv_window_load(Window* window);
 static void prv_window_unload(Window* window);
 static void prv_window_appear(Window* window);
 static void prv_timer_expired(void* context);
 
-static void prv_push(const char* title, const char* text, GDrawCommandImage *image, GColor background_color, bool persistent, uint32_t timeout_ms) {
+static char *prv_strdup(const char *text) {
+  size_t len = strlen(text);
+  char *copy = bmalloc(len + 1);
+  if (copy) {
+    memcpy(copy, text, len + 1);
+  }
+  return copy;
+}
+
+static GColor prv_tone_color(ResultTone tone) {
+  switch (tone) {
+    case ResultToneSuccess: return SQUIRE_COLOR_SUCCESS;
+    case ResultToneWarning: return SQUIRE_COLOR_WARNING;
+    case ResultToneError: return SQUIRE_COLOR_ERROR;
+    case ResultToneInfo:
+    case ResultToneProgress:
+    default: return SQUIRE_COLOR_AZURE;
+  }
+}
+
+Window* result_window_push(ResultTone tone, const char* title, const char* text, uint32_t timeout_ms) {
+  if (tone == ResultToneProgress) {
+    result_window_dismiss_progress();
+  }
   Window* window = bwindow_create();
   ResultWindowData* data = bmalloc(sizeof(ResultWindowData));
+  if (!window || !data) {
+    goto oom;
+  }
   memset(data, 0, sizeof(ResultWindowData));
-  // Only bother setting the background colour if we're on a colour device.
-  GColor text_color = gcolor_legible_over(background_color);
-#ifdef PBL_COLOR
-  window_set_background_color(window, background_color);
-  data->background_color = background_color;
-  data->text_color = text_color;
-#endif
-  data->image = image;
-  data->title_text = bmalloc(strlen(title) + 1);
-  strncpy(data->title_text, title, strlen(title) + 1);
-  data->text_text = bmalloc(strlen(text) + 1);
-  strncpy(data->text_text, text, strlen(text) + 1);
-  data->persistent = persistent;
+  data->tone = tone;
   data->timeout_ms = timeout_ms;
+  data->title_text = prv_strdup(title);
+  data->body_text = prv_strdup(text);
+  if (!data->title_text || !data->body_text) {
+    free(data->title_text);
+    free(data->body_text);
+    goto oom;
+  }
+  window_set_background_color(window, GColorWhite);
   window_set_user_data(window, data);
   window_set_window_handlers(window, (WindowHandlers) {
     .load = prv_window_load,
     .unload = prv_window_unload,
     .appear = prv_window_appear,
   });
+  if (tone == ResultToneProgress) {
+    s_progress_window = window;
+  }
   window_stack_push(window, true);
+  return window;
+oom:
+  SQUIRE_LOG(APP_LOG_LEVEL_ERROR, "Not enough memory to show a status card.");
+  free(data);
+  if (window) {
+    window_destroy(window);
+  }
+  return NULL;
 }
 
-void result_window_push(const char* title, const char* text, GDrawCommandImage *image, GColor background_color) {
-  prv_push(title, text, image, background_color, false, 4000);
+void result_window_push_phone_unreachable(void) {
+  result_window_push(ResultToneError, "Phone unreachable",
+      "Squire couldn't reach the Pebble app on your phone. Check Bluetooth, then try again.",
+      RESULT_WINDOW_PERSISTENT);
 }
 
-void result_window_push_with_timeout(const char* title, const char* text, GDrawCommandImage *image, GColor background_color, uint32_t timeout_ms) {
-  prv_push(title, text, image, background_color, false, timeout_ms);
+void result_window_dismiss_progress(void) {
+  if (s_progress_window) {
+    // Unload clears s_progress_window.
+    window_stack_remove(s_progress_window, false);
+  }
 }
 
-void result_window_push_persistent(const char* title, const char* text, GDrawCommandImage *image, GColor background_color) {
-  prv_push(title, text, image, background_color, true, 0);
+void result_window_set_closed_handler(Window *window, ResultWindowClosedHandler handler) {
+  ResultWindowData* data = window_get_user_data(window);
+  data->closed_handler = handler;
+}
+
+static void prv_draw_glyph(GContext *ctx, ResultTone tone, GPoint c, GColor ink) {
+  const int r = GLYPH_RADIUS;
+  graphics_context_set_stroke_color(ctx, ink);
+  graphics_context_set_fill_color(ctx, ink);
+  graphics_context_set_stroke_width(ctx, 3);
+  graphics_draw_circle(ctx, c, r);
+  const int k = r / 2;
+  switch (tone) {
+    case ResultToneSuccess:
+      graphics_draw_line(ctx, GPoint(c.x - k, c.y), GPoint(c.x - k / 3, c.y + k * 2 / 3));
+      graphics_draw_line(ctx, GPoint(c.x - k / 3, c.y + k * 2 / 3), GPoint(c.x + k, c.y - k * 2 / 3));
+      break;
+    case ResultToneError:
+      graphics_draw_line(ctx, GPoint(c.x - k * 2 / 3, c.y - k * 2 / 3), GPoint(c.x + k * 2 / 3, c.y + k * 2 / 3));
+      graphics_draw_line(ctx, GPoint(c.x + k * 2 / 3, c.y - k * 2 / 3), GPoint(c.x - k * 2 / 3, c.y + k * 2 / 3));
+      break;
+    case ResultToneWarning:
+      graphics_draw_line(ctx, GPoint(c.x, c.y - k), GPoint(c.x, c.y + k / 4));
+      graphics_fill_circle(ctx, GPoint(c.x, c.y + k - 1), 2);
+      break;
+    case ResultToneInfo:
+    default:
+      graphics_fill_circle(ctx, GPoint(c.x, c.y - k + 1), 2);
+      graphics_draw_line(ctx, GPoint(c.x, c.y - k / 4), GPoint(c.x, c.y + k));
+      break;
+  }
+}
+
+static void prv_content_update(Layer *layer, GContext *ctx) {
+  Window *window = *(Window **)layer_get_data(layer);
+  ResultWindowData *data = window_get_user_data(window);
+  GRect bounds = layer_get_bounds(layer);
+  GColor band = prv_tone_color(data->tone);
+#ifdef PBL_COLOR
+  graphics_context_set_fill_color(ctx, band);
+  graphics_fill_rect(ctx, GRect(0, 0, bounds.size.w, BAND_HEIGHT), 0, GCornerNone);
+  GColor ink = gcolor_legible_over(band);
+#else
+  GColor ink = GColorBlack;
+  (void)band;
+#endif
+  if (data->tone != ResultToneProgress) {
+    prv_draw_glyph(ctx, data->tone, GPoint(bounds.size.w / 2, BAND_HEIGHT / 2), ink);
+  }
+  int16_t y = BAND_HEIGHT + SQUIRE_SPACE_S;
+  const int16_t w = bounds.size.w - TEXT_INSET * 2;
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, data->title_text, fonts_get_system_font(CARD_TITLE_FONT),
+                     GRect(TEXT_INSET, y, w, data->title_height), GTextOverflowModeWordWrap,
+                     GTextAlignmentCenter, NULL);
+  y += data->title_height + SQUIRE_SPACE_S;
+  graphics_draw_text(ctx, data->body_text, fonts_get_system_font(SQUIRE_FONT_BODY),
+                     GRect(TEXT_INSET, y, w, data->body_height), GTextOverflowModeWordWrap,
+                     GTextAlignmentCenter, NULL);
+}
+
+static void prv_select_clicked(ClickRecognizerRef recognizer, void *context) {
+  window_stack_remove((Window *)context, true);
+}
+
+static void prv_click_config_provider(void *context) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, prv_select_clicked);
 }
 
 static void prv_window_load(Window* window) {
@@ -89,67 +206,85 @@ static void prv_window_load(Window* window) {
   GRect bounds = layer_get_bounds(root_layer);
 
   data->status_bar = bstatus_bar_layer_create();
-  squire_status_bar_result_pane_config(data->status_bar);
+  if (data->status_bar) {
 #ifdef PBL_COLOR
-  status_bar_layer_set_colors(data->status_bar, data->background_color, gcolor_legible_over(data->background_color));
-#endif
-  layer_add_child(root_layer, status_bar_layer_get_layer(data->status_bar));
-
-  data->title_layer = btext_layer_create(GRect(5, 15, bounds.size.w - 10, 40));
-  text_layer_set_background_color(data->title_layer, GColorClear);
-#ifdef PBL_COLOR
-  text_layer_set_text_color(data->title_layer, data->text_color);
+    GColor band = prv_tone_color(data->tone);
+    status_bar_layer_set_colors(data->status_bar, band, gcolor_legible_over(band));
+    status_bar_layer_set_separator_mode(data->status_bar, StatusBarLayerSeparatorModeNone);
 #else
-  text_layer_set_text_color(data->title_layer, GColorBlack);
+    squire_status_bar_result_pane_config(data->status_bar);
 #endif
-  text_layer_set_font(data->title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
-  text_layer_set_text(data->title_layer, data->title_text);
-  text_layer_set_text_alignment(data->title_layer, GTextAlignmentCenter);
-  text_layer_set_overflow_mode(data->title_layer, GTextOverflowModeWordWrap);
-  layer_add_child(root_layer, text_layer_get_layer(data->title_layer));
+    layer_add_child(root_layer, status_bar_layer_get_layer(data->status_bar));
+  }
 
-  // Calculate available height for text (account for status bar, title, and bottom margin)
-  int16_t text_height = bounds.size.h - STATUS_BAR_LAYER_HEIGHT - 60;
-  data->text_layer = btext_layer_create(GRect(5, 55, bounds.size.w - 10, text_height));
-  text_layer_set_background_color(data->text_layer, GColorClear);
-#ifdef PBL_COLOR
-  text_layer_set_text_color(data->text_layer, data->text_color);
-#else
-  text_layer_set_text_color(data->text_layer, GColorBlack);
+  const int16_t w = bounds.size.w - TEXT_INSET * 2;
+  data->title_height = graphics_text_layout_get_content_size(
+      data->title_text, fonts_get_system_font(CARD_TITLE_FONT), GRect(0, 0, w, 1000),
+      GTextOverflowModeWordWrap, GTextAlignmentCenter).h + SQUIRE_SPACE_S;
+  data->body_height = graphics_text_layout_get_content_size(
+      data->body_text, fonts_get_system_font(SQUIRE_FONT_BODY), GRect(0, 0, w, 2000),
+      GTextOverflowModeWordWrap, GTextAlignmentCenter).h + SQUIRE_SPACE_S;
+  const int16_t content_h = BAND_HEIGHT + SQUIRE_SPACE_S * 2 + data->title_height +
+                            data->body_height + BOTTOM_PADDING;
+
+  GRect scroll_frame = GRect(0, STATUS_BAR_LAYER_HEIGHT, bounds.size.w, bounds.size.h - STATUS_BAR_LAYER_HEIGHT);
+  data->scroll_layer = bscroll_layer_create(scroll_frame);
+  data->content_layer = blayer_create_with_data(GRect(0, 0, bounds.size.w, content_h), sizeof(Window *));
+  if (!data->scroll_layer || !data->content_layer) {
+    // Out of memory: an empty card can still be dismissed with BACK.
+    return;
+  }
+  *(Window **)layer_get_data(data->content_layer) = window;
+  layer_set_update_proc(data->content_layer, prv_content_update);
+  scroll_layer_set_shadow_hidden(data->scroll_layer, true);
+  scroll_layer_set_content_size(data->scroll_layer, GSize(bounds.size.w, content_h));
+  scroll_layer_set_context(data->scroll_layer, window);
+  scroll_layer_set_callbacks(data->scroll_layer, (ScrollLayerCallbacks) {
+    .click_config_provider = prv_click_config_provider,
+  });
+  scroll_layer_set_click_config_onto_window(data->scroll_layer, window);
+  scroll_layer_add_child(data->scroll_layer, data->content_layer);
+#ifdef PBL_ROUND
+  scroll_layer_set_paging(data->scroll_layer, true);
 #endif
-  text_layer_set_text_alignment(data->text_layer, GTextAlignmentCenter);
-  text_layer_set_font(data->text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
-  text_layer_set_text(data->text_layer, data->text_text);
-  text_layer_set_overflow_mode(data->text_layer, GTextOverflowModeWordWrap);
-  layer_add_child(root_layer, text_layer_get_layer(data->text_layer));
+  layer_add_child(root_layer, scroll_layer_get_layer(data->scroll_layer));
 
-  if (data->image) {
-    GSize image_size = gdraw_command_image_get_bounds_size(data->image);
-    data->image_layer = vector_layer_create(GRect(bounds.size.w / 2 - image_size.w / 2, bounds.size.h - image_size.h - 5, image_size.w, image_size.h));
-    vector_layer_set_vector(data->image_layer, data->image);
-    layer_add_child(root_layer, vector_layer_get_layer(data->image_layer));
-  } else {
-    data->image_layer = NULL;
+  if (data->tone == ResultToneProgress) {
+    data->thinking_layer = thinking_layer_create(GRect((bounds.size.w - THINKING_LAYER_WIDTH) / 2,
+        (BAND_HEIGHT - THINKING_LAYER_HEIGHT) / 2, THINKING_LAYER_WIDTH, THINKING_LAYER_HEIGHT));
+    if (data->thinking_layer) {
+      thinking_layer_set_color(data->thinking_layer, PBL_IF_COLOR_ELSE(GColorWhite, GColorBlack));
+      layer_add_child(data->content_layer, data->thinking_layer);
+    }
   }
 }
 
 static void prv_window_unload(Window* window) {
   ResultWindowData* data = window_get_user_data(window);
-  text_layer_destroy(data->title_layer);
-  text_layer_destroy(data->text_layer);
-  if (data->image_layer) {
-    vector_layer_destroy(data->image_layer);
+  if (s_progress_window == window) {
+    s_progress_window = NULL;
   }
-  if (data->image) {
-    gdraw_command_image_destroy(data->image);
+  if (data->closed_handler) {
+    data->closed_handler(window);
   }
-  status_bar_layer_destroy(data->status_bar);
   if (data->timer) {
     app_timer_cancel(data->timer);
     data->timer = NULL;
   }
+  if (data->thinking_layer) {
+    thinking_layer_destroy(data->thinking_layer);
+  }
+  if (data->content_layer) {
+    layer_destroy(data->content_layer);
+  }
+  if (data->scroll_layer) {
+    scroll_layer_destroy(data->scroll_layer);
+  }
+  if (data->status_bar) {
+    status_bar_layer_destroy(data->status_bar);
+  }
   free(data->title_text);
-  free(data->text_text);
+  free(data->body_text);
   free(data);
   window_destroy(window);
 }
@@ -160,8 +295,8 @@ static void prv_window_appear(Window* window) {
     app_timer_cancel(data->timer);
     data->timer = NULL;
   }
-  if (!data->persistent) {
-    data->timer = app_timer_register(data->timeout_ms > 0 ? data->timeout_ms : 4000, prv_timer_expired, window);
+  if (data->timeout_ms != RESULT_WINDOW_PERSISTENT) {
+    data->timer = app_timer_register(data->timeout_ms, prv_timer_expired, window);
   }
 }
 

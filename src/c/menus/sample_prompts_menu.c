@@ -42,6 +42,21 @@ static void prv_window_unload(Window* window);
 static uint16_t prv_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, void *context);
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context);
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context);
+static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context);
+#ifndef PBL_ROUND
+static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *context);
+static void prv_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context);
+#endif
+
+// Two lines per prompt, so most are readable without selecting them.
+#define ROW_FONT SQUIRE_FONT_LABEL
+#if PBL_DISPLAY_WIDTH >= 200
+#define ROW_HEIGHT 52
+#else
+#define ROW_HEIGHT 42
+#endif
+#define ROW_INSET (SQUIRE_SPACE_M + SQUIRE_ROUND_INSET)
+#define HEADER_HEIGHT 22
 
 static int prv_load_prompts(char *buffer, size_t size, char ***prompts) {
   int count = 1;
@@ -172,6 +187,11 @@ static void prv_window_load(Window* window) {
     .get_num_rows = prv_get_num_rows,
     .draw_row = prv_draw_row,
     .select_click = prv_select_click,
+    .get_cell_height = prv_get_cell_height,
+#ifndef PBL_ROUND
+    .get_header_height = prv_get_header_height,
+    .draw_header = prv_draw_header,
+#endif
   });
   menu_layer_set_highlight_colors(data->menu_layer, SELECTION_HIGHLIGHT_COLOUR, gcolor_legible_over(SELECTION_HIGHLIGHT_COLOUR));
 #ifdef PBL_ROUND
@@ -198,37 +218,55 @@ static uint16_t prv_get_num_rows(MenuLayer *menu_layer, uint16_t section_index, 
   return data->count;
 }
 
+static int16_t prv_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {
+#ifdef PBL_ROUND
+  if (menu_layer_is_index_selected(menu_layer, cell_index)) {
+    return ROW_HEIGHT + SQUIRE_SPACE_M;
+  }
+#endif
+  return ROW_HEIGHT;
+}
+
+#ifndef PBL_ROUND
+static int16_t prv_get_header_height(MenuLayer *menu_layer, uint16_t section_index, void *context) {
+  return HEADER_HEIGHT;
+}
+
+static void prv_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index, void *context) {
+  SamplePromptsMenuData *data = context;
+  GRect bounds = layer_get_bounds(cell_layer);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, SQUIRE_COLOR_AZURE_INK);
+  graphics_draw_text(ctx, data->using_history ? "Ask again" : "Try asking",
+                     fonts_get_system_font(SQUIRE_FONT_CAPTION),
+                     GRect(ROW_INSET, 1, bounds.size.w - ROW_INSET * 2, HEADER_HEIGHT),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_context_set_stroke_color(ctx, SQUIRE_COLOR_MUTED);
+  graphics_draw_line(ctx, GPoint(ROW_INSET, bounds.size.h - 2), GPoint(bounds.size.w - ROW_INSET, bounds.size.h - 2));
+}
+#endif
+
 static void prv_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *context) {
   SamplePromptsMenuData *data = context;
-
+  GRect bounds = layer_get_bounds(cell_layer);
+  const GTextAlignment alignment = PBL_IF_ROUND_ELSE(GTextAlignmentCenter, GTextAlignmentLeft);
+  // MenuLayer has already set the text colour for the highlight state.
   if (data->count == 0) {
-    const char *empty = data->waiting_for_history ? "Loading history..." : "No history yet";
-#ifdef PBL_ROUND
-    GRect bounds = layer_get_bounds(cell_layer);
-    graphics_draw_text(ctx, empty,
-      fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-      GRect(10, 5, bounds.size.w - 20, bounds.size.h - 10),
-      GTextOverflowModeWordWrap,
-      GTextAlignmentCenter,
-      NULL);
-#else
-    menu_cell_title_draw(ctx, cell_layer, empty);
-#endif
+    const char *empty = data->waiting_for_history ? "Fetching your recent prompts\xE2\x80\xA6" : "Nothing here yet";
+    graphics_draw_text(ctx, empty, fonts_get_system_font(ROW_FONT),
+                       GRect(ROW_INSET, 2, bounds.size.w - ROW_INSET * 2, bounds.size.h - 4),
+                       GTextOverflowModeTrailingEllipsis, alignment, NULL);
     return;
   }
-
   const char *title = data->prompts[cell_index->row];
-#ifdef PBL_ROUND
-  GRect bounds = layer_get_bounds(cell_layer);
-  graphics_draw_text(ctx, title,
-    fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-    GRect(10, 5, bounds.size.w - 20, bounds.size.h - 10),
-    GTextOverflowModeWordWrap,
-    GTextAlignmentCenter,
-    NULL);
-#else
-  menu_cell_title_draw(ctx, cell_layer, title);
-#endif
+  GFont font = fonts_get_system_font(ROW_FONT);
+  GRect box = GRect(ROW_INSET, 0, bounds.size.w - ROW_INSET * 2, bounds.size.h - 2);
+  // Centre short prompts vertically; long ones get two lines and an ellipsis.
+  GSize size = graphics_text_layout_get_content_size(title, font, box, GTextOverflowModeTrailingEllipsis, alignment);
+  box.origin.y = (bounds.size.h - size.h) / 2 - 3;
+  box.size.h = size.h + 4;
+  graphics_draw_text(ctx, title, font, box, GTextOverflowModeTrailingEllipsis, alignment, NULL);
 }
 
 static void prv_select_click(MenuLayer *menu_layer, MenuIndex *cell_index, void *context) {

@@ -79,6 +79,19 @@ static void prv_deliver(int32_t request_id, uint32_t key, const char *text) {
   test_dict_clear(&iter);
 }
 
+static void prv_deliver_seq(int32_t seq, int32_t request_id, uint32_t key, const char *text) {
+  DictionaryIterator iter = {0};
+  dict_write_int32(&iter, MESSAGE_KEY_SEQ, seq);
+  dict_write_int32(&iter, MESSAGE_KEY_REQUEST_ID, request_id);
+  if (text) {
+    dict_write_cstring(&iter, key, text);
+  } else {
+    dict_write_int32(&iter, key, 1);
+  }
+  test_deliver_inbox(&iter);
+  test_dict_clear(&iter);
+}
+
 static const char *prv_last_text(Conversation *conv) {
   ConversationEntry *e = conversation_peek(conv);
   if (!e) return NULL;
@@ -324,6 +337,29 @@ static void test_replies_are_correlated_with_request(void) {
   conversation_manager_destroy(m);
 }
 
+static void test_resent_fragment_is_not_appended_twice(void) {
+  // The phone's ack for "Hello " was lost, so it resends the same SEQ.
+  ConversationManager *m = conversation_manager_create();
+  Conversation *c = conversation_manager_get_conversation(m);
+  conversation_manager_add_input(m, "hi");
+  int32_t id = prv_sent_request_id();
+  prv_deliver_seq(700, id, MESSAGE_KEY_CHAT, "Hello ");
+  prv_deliver_seq(700, id, MESSAGE_KEY_CHAT, "Hello ");
+  prv_deliver_seq(701, id, MESSAGE_KEY_CHAT, "world");
+  CHECK(prv_last_text(c) && strcmp(prv_last_text(c), "Hello world") == 0);
+  // A repeated message that isn't adjacent is new traffic, not a resend.
+  prv_deliver_seq(702, id, MESSAGE_KEY_CHAT, "!");
+  prv_deliver_seq(701, id, MESSAGE_KEY_CHAT, "?");
+  CHECK(prv_last_text(c) && strcmp(prv_last_text(c), "Hello world!?") == 0);
+  // Messages without SEQ (older phone code) are never dropped.
+  prv_deliver(id, MESSAGE_KEY_CHAT, ".");
+  prv_deliver(id, MESSAGE_KEY_CHAT, ".");
+  CHECK(prv_last_text(c) && strcmp(prv_last_text(c), "Hello world!?..") == 0);
+  prv_deliver_seq(703, id, MESSAGE_KEY_CHAT_DONE, NULL);
+  CHECK(!conversation_manager_is_request_pending(m));
+  conversation_manager_destroy(m);
+}
+
 static void test_second_window_ignores_first_windows_reply(void) {
   ConversationManager *first = conversation_manager_create();
   conversation_manager_add_input(first, "first question");
@@ -506,6 +542,7 @@ int main(void) {
   RUN(test_delete_first_entry_never_frees_open_response);
   RUN(test_memory_pressure_during_append_relieves_and_reports);
   RUN(test_replies_are_correlated_with_request);
+  RUN(test_resent_fragment_is_not_appended_twice);
   RUN(test_second_window_ignores_first_windows_reply);
   RUN(test_out_of_memory_reply_is_reported_not_silently_truncated);
   RUN(test_prompt_not_sent_when_out_of_memory);

@@ -118,7 +118,9 @@ Pebble.addEventListener('webviewclosed', function(e) {
     if (newBot !== previousBot) {
         console.log('[index] Agent bot changed');
         session.resetMarkerMode();
-        session.cancelActiveSession();
+        // The watch may be waiting on a reply from the old bot; end it with
+        // an explanation rather than leaving it to time out.
+        session.abortActiveSession('The agent bot was changed in settings. Ask again to reach the new bot.');
         history.fetchAndSendHistory();
     }
 
@@ -209,14 +211,17 @@ function sendTelegramStatus() {
 function handleTelegramDisconnect() {
     console.log('[index] Disconnecting from Telegram');
     session.cancelActiveSession();
+    session.setRefusal('Signing out of Telegram. Try again once sign-out finishes.');
     history.clearHistory();
     return telegram.logout().then(function(result) {
+        session.setRefusal(null);
         var revoked = !!(result && result.revoked);
         console.log('[index] Signed out (' + (revoked ? 'revoked on server' : 'local only') + ')');
         send({ TELEGRAM_LOGOUT_RESULT: revoked ? 1 : 2 });
         sendTelegramStatus();
     }).catch(function(err) {
         console.error('[index] Sign-out failed: ' + (err && err.message));
+        session.setRefusal(null);
         // logout() clears local state even when revocation fails, so this
         // only happens on unexpected errors; make sure we're signed out.
         telegram.clearSession();

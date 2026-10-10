@@ -51,7 +51,7 @@ describe('Session', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         sent = [];
-        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(msg); ok(); });
+        global.Pebble.sendAppMessage = vi.fn((msg, ok) => { sent.push(stripSeq(msg)); ok(); });
         Queue.reset();
         botUsername = '@SquireTestBot';
         localStorage.clear();
@@ -68,6 +68,50 @@ describe('Session', () => {
         Queue.reset();
         vi.restoreAllMocks();
         vi.useRealTimers();
+    });
+
+    describe('signed-in state', () => {
+        it('tells the watch it is signed out when the phone has no Telegram session', async () => {
+            telegram.hasSession.mockReturnValue(false);
+            start();
+            await flush();
+            expect(sent).toContainEqual({ TELEGRAM_CONNECTED: 0 });
+            expect(watchMessages().some(m => typeof m.WARNING === 'string' && /Not signed in/.test(m.WARNING))).toBe(true);
+            expect(telegram.initClient).not.toHaveBeenCalled();
+        });
+
+        it('forgets a session Telegram rejects mid-request and tells the watch', async () => {
+            const forget = vi.spyOn(telegram, 'forgetInvalidSession').mockImplementation(() => {});
+            client.sendMessage = () => Promise.reject(Object.assign(new Error('x'), { errorMessage: 'AUTH_KEY_UNREGISTERED' }));
+            start();
+            await flush();
+            expect(forget).toHaveBeenCalledTimes(1);
+            expect(watchMessages().some(m => typeof m.WARNING === 'string' && /session expired/i.test(m.WARNING))).toBe(true);
+        });
+    });
+
+    describe('abandoned and refused requests', () => {
+        it('tells the watch when its request is abandoned (agent bot changed)', async () => {
+            start();
+            await flush();
+            sessionModule.abortActiveSession('Bot changed.');
+            await flush();
+            expect(watchMessages()).toEqual(expect.arrayContaining([{ WARNING: 'Bot changed.' }, { CHAT_DONE: 1 }]));
+            expect(sessionModule.getActiveSession()).toBe(null);
+        });
+
+        it('refuses prompts while signing out instead of sending them', async () => {
+            sessionModule.setRefusal('Signing out.');
+            try {
+                start();
+                await flush();
+            } finally {
+                sessionModule.setRefusal(null);
+            }
+            expect(client.sentMessages).toHaveLength(0);
+            expect(telegram.initClient).not.toHaveBeenCalled();
+            expect(watchMessages()).toEqual([{ WARNING: 'Signing out.' }, { CHAT_DONE: 1 }]);
+        });
     });
 
     describe('peer filtering and correlation', () => {
@@ -295,22 +339,45 @@ describe('Session', () => {
     });
 
     describe('lifecycle', () => {
-        it('cancels the previous request when a new prompt arrives', async () => {
+        it('refuses a new prompt while a sent one is outstanding, so its late untagged reply is never taken as the answer', async () => {
+            // Close the conversation mid-request and reopen it: the new window
+            // has a new request ID. The bot's reply to the first prompt has no
+            // reply_to, so nothing can say which prompt it answers.
             const first = start('first');
             await flush();
-            const firstClient = client;
-            client.emitNewMessage(botMessage(101, 'first reply'));
-            setup({ sentId: 500 });
+            expect(client.sentMessages).toHaveLength(1);
             const second = sessionModule.startSession('second', null, REQUEST_ID + 1);
             await flush();
-            expect(firstClient.handlers.length).toBe(0);
-            // Nothing more from the first request reaches the watch.
-            firstClient.emitNewMessage(botMessage(102, 'late first reply'));
-            await vi.advanceTimersByTimeAsync(sessionModule.HARD_TIMEOUT_MS);
-            const firstDone = sent.filter(m => m.REQUEST_ID === REQUEST_ID && m.CHAT_DONE);
-            expect(firstDone.length).toBe(0);
+            expect(client.sentMessages).toHaveLength(1);
+            const forSecond = sent.filter(m => m.REQUEST_ID === REQUEST_ID + 1);
+            expect(forSecond.some(m => typeof m.WARNING === 'string' && /previous request/.test(m.WARNING))).toBe(true);
+            expect(forSecond.some(m => m.CHAT_DONE)).toBe(true);
+            expect(await second.done).toMatchObject({ complete: false });
+            expect(sessionModule.getActiveSession()).toBe(first);
+
+            client.emitNewMessage(botMessage(101, 'answer to first'));
+            expect(sent.filter(m => m.REQUEST_ID === REQUEST_ID + 1 && m.CHAT)).toHaveLength(0);
+            expect(sent.some(m => m.REQUEST_ID === REQUEST_ID && m.CHAT === 'answer to first')).toBe(true);
+
+            // Once the first request is over, the next prompt goes out.
+            await vi.advanceTimersByTimeAsync(sessionModule.QUIET_COMPLETE_MS + 10);
+            expect(await first.done).toMatchObject({ complete: true });
+            sessionModule.startSession('third', null, REQUEST_ID + 2);
+            await flush();
+            expect(client.sentMessages).toHaveLength(2);
+            expect(client.sentMessages[1].params.message).toContain('third');
+        });
+
+        it('supersedes a prompt that has not reached Telegram yet', async () => {
+            telegram.initClient.mockReturnValueOnce(new Promise(() => {}));
+            const first = start('first');
+            await flush();
+            const second = sessionModule.startSession('second', null, REQUEST_ID + 1);
+            await flush();
             expect(await first.done).toMatchObject({ cancelled: true });
-            expect(second).not.toBe(first);
+            expect(client.sentMessages).toHaveLength(1);
+            expect(client.sentMessages[0].params.message).toContain('second');
+            expect(sessionModule.getActiveSession()).toBe(second);
         });
 
         it('removes every handler and timer on completion', async () => {
@@ -339,7 +406,7 @@ describe('Session', () => {
             // The reply text can't get through (e.g. it keeps being dropped),
             // but small control messages still can.
             global.Pebble.sendAppMessage = vi.fn((msg, ok, fail) => {
-                sent.push(msg);
+                sent.push(stripSeq(msg));
                 if (msg.CHAT !== undefined) fail(); else ok();
             });
             client.emitNewMessage(botMessage(101, 'this chunk is lost'));

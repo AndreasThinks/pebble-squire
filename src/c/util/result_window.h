@@ -19,8 +19,33 @@
 
 #include <pebble.h>
 
-void result_window_push(const char* title, const char* text, GDrawCommandImage *image, GColor background_color);
-void result_window_push_with_timeout(const char* title, const char* text, GDrawCommandImage *image, GColor background_color, uint32_t timeout_ms);
-void result_window_push_persistent(const char* title, const char* text, GDrawCommandImage *image, GColor background_color);
+// Status cards: a full-screen message with a tone-coloured header and glyph,
+// a title and scrollable body. SELECT or BACK dismisses; UP/DOWN scroll.
+typedef enum {
+  ResultToneInfo,
+  ResultToneSuccess,
+  ResultToneWarning,
+  ResultToneError,
+  // Shows stepping dots instead of a glyph, for "working on it" states. Only
+  // one progress card exists at a time: pushing another replaces it, and
+  // result_window_dismiss_progress() removes it when the work finishes.
+  ResultToneProgress,
+} ResultTone;
+
+// Pass as timeout_ms to keep the card until the user dismisses it.
+#define RESULT_WINDOW_PERSISTENT 0
+#define RESULT_WINDOW_SHORT_MS 4000
+
+typedef void (*ResultWindowClosedHandler)(Window *window);
+
+// Returns the card's window, or NULL if there wasn't memory to show it.
+Window* result_window_push(ResultTone tone, const char* title, const char* text, uint32_t timeout_ms);
+// Called as the card unloads, however it was closed. Lets owners that keep the
+// window pointer (to remove it later) forget it in time.
+void result_window_set_closed_handler(Window *window, ResultWindowClosedHandler handler);
+// Removes the current progress card, if any. Safe to call when there is none.
+void result_window_dismiss_progress(void);
+// The shared "couldn't send to the phone" error card.
+void result_window_push_phone_unreachable(void);
 
 #endif //RESULT_WINDOW_H

@@ -17,6 +17,8 @@
 #include "consent.h"
 #include "../util/persist_keys.h"
 #include "../util/style.h"
+#include "../util/result_window.h"
+#include "../util/tuple_util.h"
 #include "../util/logging.h"
 #include "../util/memory/malloc.h"
 #include "../util/memory/sdk.h"
@@ -31,19 +33,37 @@
 #define STAGE_AGENT_CONSENT 1
 #define STAGE_LOCATION_CONSENT 2
 
-#ifdef PBL_PLATFORM_GABBRO
-#define TEXT_PADDING 30
+#define STAGE_COUNT 3
+
+// Onboarding is three short pages. Each opens with an azure band carrying the
+// page title and progress seals, and ends with a footer naming what SELECT
+// does, so it's obvious the page has to be read to the end.
+#define TEXT_PADDING (SQUIRE_SPACE_M + SQUIRE_ROUND_INSET)
+#ifdef PBL_ROUND
 #define TEXT_ALIGNMENT GTextAlignmentCenter
-#define SCROLL_BOTTOM_PADDING 60
+#define HEADER_TOP SQUIRE_SPACE_L
 #else
-#define TEXT_PADDING 10
 #define TEXT_ALIGNMENT GTextAlignmentLeft
+#define HEADER_TOP 0
+#endif
+#if defined(PBL_PLATFORM_GABBRO)
+#define SCROLL_BOTTOM_PADDING 60
+#elif defined(PBL_ROUND)
+#define SCROLL_BOTTOM_PADDING 40
+#else
 #define SCROLL_BOTTOM_PADDING 0
 #endif
+#define BODY_FONT SQUIRE_FONT_BODY
+#define HEADER_HEIGHT (HEADER_TOP + 50)
+#define BODY_TOP (HEADER_HEIGHT + SQUIRE_SPACE_XS)
+#define FOOTER_HEIGHT 30
+// How long the frozen location menu waits for the phone to confirm.
+#define LOCATION_REPLY_TIMEOUT_MS 15000
 
 typedef struct {
   ScrollLayer *scroll_layer;
-  TextLayer *title_layer;
+  Layer *header_layer;
+  Layer *footer_layer;
   TextLayer *text_layer;
   Layer *content_indicator_layer;
   char* current_text;
@@ -53,6 +73,9 @@ typedef struct {
   ActionMenu* action_menu;
   int stage;
   int expected_app_response;
+  // The location choice sent to the phone, awaiting its confirmation.
+  bool pending_choice;
+  AppTimer *response_timer;
   EventHandle app_message_handle;
 } ConsentWindowData;
 
@@ -68,6 +91,50 @@ static void prv_consent_menu_select_callback(ActionMenu *action_menu, const Acti
 static void prv_action_menu_close(ActionMenu* action_menu, const ActionMenuItem* item, void* context);
 static void prv_app_message_handler(DictionaryIterator *iter, void *context);
 static void prv_mark_consents_complete();
+
+static void prv_header_update(Layer *layer, GContext *ctx) {
+  Window *window = *(Window **)layer_get_data(layer);
+  ConsentWindowData *data = window_get_user_data(window);
+  GRect bounds = layer_get_bounds(layer);
+  graphics_context_set_fill_color(ctx, SQUIRE_COLOR_AZURE);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+  // Progress seals: done and current pages filled gold, later pages hollow.
+  const int16_t r = 3;
+  const int16_t gap = 12;
+  const int16_t seals_w = gap * (STAGE_COUNT - 1);
+  const int16_t y = HEADER_TOP + 10;
+  for (int i = 0; i < STAGE_COUNT; ++i) {
+    GPoint c = GPoint(bounds.size.w / 2 - seals_w / 2 + gap * i, y);
+    if (i <= data->stage) {
+      graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(SQUIRE_COLOR_GOLD, GColorWhite));
+      graphics_fill_circle(ctx, c, r);
+    } else {
+      graphics_context_set_stroke_color(ctx, GColorWhite);
+      graphics_draw_circle(ctx, c, r);
+    }
+  }
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, data->title_text, fonts_get_system_font(SQUIRE_FONT_TITLE),
+                     GRect(TEXT_PADDING, HEADER_TOP + 14, bounds.size.w - TEXT_PADDING * 2, 30),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+static void prv_footer_update(Layer *layer, GContext *ctx) {
+  Window *window = *(Window **)layer_get_data(layer);
+  ConsentWindowData *data = window_get_user_data(window);
+  GRect bounds = layer_get_bounds(layer);
+  const char *label = data->stage == STAGE_LOCATION_CONSENT ? "Choose" : "Continue";
+  GFont font = fonts_get_system_font(SQUIRE_FONT_LABEL);
+  GSize text = graphics_text_layout_get_content_size(label, font, bounds, GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft);
+  const int16_t glyph_w = 12 + SQUIRE_SPACE_S;
+  const int16_t x = (bounds.size.w - glyph_w - text.w) / 2;
+  graphics_context_set_stroke_color(ctx, SQUIRE_COLOR_MUTED);
+  graphics_draw_line(ctx, GPoint(TEXT_PADDING, 0), GPoint(bounds.size.w - TEXT_PADDING - 1, 0));
+  squire_draw_select_glyph(ctx, GPoint(x + 6, bounds.size.h / 2 + 1), SQUIRE_COLOR_AZURE_INK);
+  graphics_context_set_text_color(ctx, SQUIRE_COLOR_AZURE_INK);
+  graphics_draw_text(ctx, label, font, GRect(x + glyph_w, bounds.size.h / 2 - 11, text.w + 2, 24),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+}
 
 void consent_window_push() {
   Window* window = bwindow_create();
@@ -110,13 +177,22 @@ static void prv_window_load(Window *window) {
   ConsentWindowData *data = window_get_user_data(window);
   Layer *root_layer = window_get_root_layer(window);
   GRect window_bounds = layer_get_frame(root_layer);
+  window_set_background_color(window, GColorWhite);
   data->scroll_layer = bscroll_layer_create(window_bounds);
   scroll_layer_set_click_config_onto_window(data->scroll_layer, window);
-  data->title_layer = btext_layer_create(GRect(0, 0, window_bounds.size.w, 30));
-  text_layer_set_text_alignment(data->title_layer, GTextAlignmentCenter);
-  text_layer_set_font(data->title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
-  data->text_layer = btext_layer_create(GRect(TEXT_PADDING, 30, window_bounds.size.w - TEXT_PADDING * 2, window_bounds.size.h - 30));
-  text_layer_set_font(data->text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
+  // Decoration only: if memory is short the pages still work without them.
+  data->header_layer = blayer_create_with_data(GRect(0, 0, window_bounds.size.w, HEADER_HEIGHT), sizeof(Window *));
+  if (data->header_layer) {
+    *(Window **)layer_get_data(data->header_layer) = window;
+    layer_set_update_proc(data->header_layer, prv_header_update);
+  }
+  data->footer_layer = blayer_create_with_data(GRect(0, 0, window_bounds.size.w, FOOTER_HEIGHT), sizeof(Window *));
+  if (data->footer_layer) {
+    *(Window **)layer_get_data(data->footer_layer) = window;
+    layer_set_update_proc(data->footer_layer, prv_footer_update);
+  }
+  data->text_layer = btext_layer_create(GRect(TEXT_PADDING, BODY_TOP, window_bounds.size.w - TEXT_PADDING * 2, window_bounds.size.h - BODY_TOP));
+  text_layer_set_font(data->text_layer, fonts_get_system_font(BODY_FONT));
   text_layer_set_text_alignment(data->text_layer, TEXT_ALIGNMENT);
   data->select_indicator_bitmap = bgbitmap_create_with_resource(RESOURCE_ID_BUTTON_INDICATOR);
   data->select_indicator_layer = bbitmap_layer_create(
@@ -138,8 +214,13 @@ static void prv_window_load(Window *window) {
   content_indicator_configure_direction(indicator, ContentIndicatorDirectionDown, &content_indicator_config);
   layer_add_child(root_layer, scroll_layer_get_layer(data->scroll_layer));
   layer_add_child(root_layer, (Layer *) data->select_indicator_layer);
-  scroll_layer_add_child(data->scroll_layer, (Layer *) data->title_layer);
+  if (data->header_layer) {
+    scroll_layer_add_child(data->scroll_layer, data->header_layer);
+  }
   scroll_layer_add_child(data->scroll_layer, (Layer *) data->text_layer);
+  if (data->footer_layer) {
+    scroll_layer_add_child(data->scroll_layer, data->footer_layer);
+  }
   layer_add_child(root_layer, data->content_indicator_layer);
   scroll_layer_set_callbacks(data->scroll_layer, (ScrollLayerCallbacks) {
     .click_config_provider = prv_click_config_provider,
@@ -159,12 +240,21 @@ static void prv_window_appear(Window *window) {
 
 static void prv_window_unload(Window *window) {
   ConsentWindowData* data = window_get_user_data(window);
+  if (data->response_timer) {
+    app_timer_cancel(data->response_timer);
+    data->response_timer = NULL;
+  }
   if (data->app_message_handle) {
     events_app_message_unsubscribe(data->app_message_handle);
     data->app_message_handle = NULL;
   }
   scroll_layer_destroy(data->scroll_layer);
-  text_layer_destroy(data->title_layer);
+  if (data->header_layer) {
+    layer_destroy(data->header_layer);
+  }
+  if (data->footer_layer) {
+    layer_destroy(data->footer_layer);
+  }
   text_layer_destroy(data->text_layer);
   gbitmap_destroy(data->select_indicator_bitmap);
   bitmap_layer_destroy(data->select_indicator_layer);
@@ -183,11 +273,11 @@ static void prv_set_stage(Window* window, int stage) {
   switch (stage) {
   case STAGE_LLM_WARNING:
     res_handle = resource_get_handle(RESOURCE_ID_LLM_WARNING_TEXT);
-    data->title_text = "Important";
+    data->title_text = "Before you start";
     break;
   case STAGE_AGENT_CONSENT:
     res_handle = resource_get_handle(RESOURCE_ID_AGENT_CONSENT_TEXT);
-    data->title_text = "Privacy";
+    data->title_text = "Your privacy";
     break;
   case STAGE_LOCATION_CONSENT:
     res_handle = resource_get_handle(RESOURCE_ID_LOCATION_CONSENT_TEXT);
@@ -204,18 +294,26 @@ static void prv_set_stage(Window* window, int stage) {
     data->current_text[res_size] = '\0';
   }
   data->stage = stage;
-  text_layer_set_text(data->title_layer, data->title_text);
+  if (data->header_layer) {
+    layer_mark_dirty(data->header_layer);
+  }
   text_layer_set_text(data->text_layer, data->current_text);
   GSize window_size = layer_get_frame(window_get_root_layer(window)).size;
   GSize text_size = graphics_text_layout_get_content_size(
     data->current_text,
-    fonts_get_system_font(FONT_KEY_GOTHIC_24),
-    GRect(TEXT_PADDING, 30, window_size.w - TEXT_PADDING * 2, 1000),
+    fonts_get_system_font(BODY_FONT),
+    GRect(TEXT_PADDING, BODY_TOP, window_size.w - TEXT_PADDING * 2, 2000),
     GTextOverflowModeWordWrap,
     TEXT_ALIGNMENT);
   text_size.h += 5;
+  text_size.w = window_size.w - TEXT_PADDING * 2;
   text_layer_set_size(data->text_layer, text_size);
-  scroll_layer_set_content_size(data->scroll_layer, GSize(window_size.w, 33 + text_size.h + SCROLL_BOTTOM_PADDING));
+  const int16_t footer_y = BODY_TOP + text_size.h + SQUIRE_SPACE_S;
+  if (data->footer_layer) {
+    layer_set_frame(data->footer_layer, GRect(0, footer_y, window_size.w, FOOTER_HEIGHT));
+    layer_mark_dirty(data->footer_layer);
+  }
+  scroll_layer_set_content_size(data->scroll_layer, GSize(window_size.w, footer_y + FOOTER_HEIGHT + SCROLL_BOTTOM_PADDING));
   scroll_layer_set_content_offset(data->scroll_layer, GPoint(0, 0), false);
 }
 
@@ -230,7 +328,11 @@ static void prv_select_click_handler(ClickRecognizerRef recognizer, void *contex
   Window* window = context;
   ConsentWindowData *data = window_get_user_data(window);
   if (!prv_did_scroll_to_bottom(window)) {
-    SQUIRE_LOG(APP_LOG_LEVEL_DEBUG, "User clicked select but hasn't scrolled to bottom; ignoring.");
+    // Not at the end yet: SELECT reads on by most of a page, rather than
+    // silently doing nothing.
+    GPoint offset = scroll_layer_get_content_offset(data->scroll_layer);
+    int16_t page = layer_get_frame(scroll_layer_get_layer(data->scroll_layer)).size.h - 40;
+    scroll_layer_set_content_offset(data->scroll_layer, GPoint(0, offset.y - page), true);
     return;
   }
   switch (data->stage) {
@@ -249,32 +351,59 @@ static void prv_select_click_handler(ClickRecognizerRef recognizer, void *contex
 static void prv_present_consent_menu(Window* window) {
   ConsentWindowData* data = window_get_user_data(window);
   ActionMenuLevel* root_level = baction_menu_level_create(2);
-  action_menu_level_add_action(root_level, "Allow", prv_consent_menu_select_callback, (void *)true);
-  action_menu_level_add_action(root_level, "Deny", prv_consent_menu_select_callback, (void *)false);
+  action_menu_level_add_action(root_level, "Allow location", prv_consent_menu_select_callback, (void *)true);
+  action_menu_level_add_action(root_level, "Don't allow", prv_consent_menu_select_callback, (void *)false);
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = root_level,
-    .colors = {
-      .background = ACCENT_COLOUR,
-      .foreground = gcolor_legible_over(ACCENT_COLOUR),
-    },
     .align = ActionMenuAlignCenter,
     .context = window,
     .did_close = prv_action_menu_close,
   };
+  squire_action_menu_colors(&config);
   data->action_menu = action_menu_open(&config);
+}
+
+// The phone never confirmed: unfreeze the user rather than leave the menu
+// stuck. A reply that turns up later is ignored (expected_app_response is
+// cleared) and the user simply chooses again.
+static void prv_location_reply_timed_out(void *context) {
+  Window *window = context;
+  ConsentWindowData *data = window_get_user_data(window);
+  data->response_timer = NULL;
+  data->expected_app_response = 0;
+  SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Phone didn't confirm the location choice.");
+  if (data->action_menu) {
+    // Frozen menus take no input, so this is still the open menu.
+    action_menu_close(data->action_menu, true);
+    data->action_menu = NULL;
+  }
+  result_window_push(ResultToneError, "No answer from phone",
+      "Squire couldn't confirm your location choice with the Pebble app on your phone. Check Bluetooth, then press SELECT to choose again.",
+      RESULT_WINDOW_PERSISTENT);
 }
 
 static void prv_consent_menu_select_callback(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
   Window *window = context;
   ConsentWindowData *data = window_get_user_data(window);
-  data->expected_app_response = STAGE_LOCATION_CONSENT;
   bool choice = (int)action_menu_item_get_action_data(action);
-  action_menu_freeze(action_menu);
-  // We need to inform the phone of the user's choice.
+  // We need to inform the phone of the user's choice; onboarding finishes
+  // when it confirms.
   DictionaryIterator *iter;
-  app_message_outbox_begin(&iter);
-  dict_write_int16(iter, MESSAGE_KEY_LOCATION_ENABLED, choice);
-  app_message_outbox_send();
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter ||
+      dict_write_int16(iter, MESSAGE_KEY_LOCATION_ENABLED, choice) != DICT_OK ||
+      app_message_outbox_send() != APP_MSG_OK) {
+    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Couldn't send location choice to the phone.");
+    // The menu closes; SELECT on the last page reopens it.
+    result_window_push_phone_unreachable();
+    return;
+  }
+  data->expected_app_response = STAGE_LOCATION_CONSENT;
+  data->pending_choice = choice;
+  if (data->response_timer) {
+    app_timer_cancel(data->response_timer);
+  }
+  data->response_timer = app_timer_register(LOCATION_REPLY_TIMEOUT_MS, prv_location_reply_timed_out, window);
+  action_menu_freeze(action_menu);
 }
 
 static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
@@ -288,11 +417,20 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
   if (tuple == NULL) {
     return;
   }
+  bool location_enabled = tuple_get_int32(tuple) != 0;
+  if (location_enabled != data->pending_choice) {
+    // A late confirmation of an earlier, timed-out choice.
+    SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Ignoring a stale location consent response.");
+    return;
+  }
   data->expected_app_response = 0;
+  if (data->response_timer) {
+    app_timer_cancel(data->response_timer);
+    data->response_timer = NULL;
+  }
   SQUIRE_LOG(APP_LOG_LEVEL_INFO, "Got location enabled reply, dismissing dialog.");
   events_app_message_unsubscribe(data->app_message_handle);
   data->app_message_handle = NULL;
-  bool location_enabled = tuple->value->int16;
   status_t status = persist_write_bool(PERSIST_KEY_LOCATION_ENABLED, location_enabled);
   if (status < 0) {
     SQUIRE_LOG(APP_LOG_LEVEL_WARNING, "Failed to write location enabled: %d", status);

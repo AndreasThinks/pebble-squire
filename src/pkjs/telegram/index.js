@@ -33,6 +33,7 @@ module.exports = {
     getClient: client.getClient,
     getEventBuilders: client.getEventBuilders,
     resetClient: client.resetClient,
+    forgetInvalidSession: client.forgetInvalidSession,
 
     // Auth
     startAuth: auth.startAuth,

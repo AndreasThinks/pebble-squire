@@ -24,5 +24,8 @@ typedef Layer TalkingSquireLayer;
 TalkingSquireLayer *talking_squire_layer_create(GRect frame);
 void talking_squire_layer_destroy(TalkingSquireLayer *layer);
 void talking_squire_layer_set_text(TalkingSquireLayer *layer, const char *text);
+// A smaller second line in the bubble telling the user what SELECT does now.
+// The string must outlive the layer (pass a literal). NULL hides it.
+void talking_squire_layer_set_caption(TalkingSquireLayer *layer, const char *caption);
 
 #endif //TALKING_SQUIRE_LAYER_H

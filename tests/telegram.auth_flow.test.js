@@ -150,6 +150,26 @@ describe('Telegram sign-in', () => {
         expect(gram.instances.every(c => c.destroyed)).toBe(true);
     });
 
+    it('lets a new sign-in start while a step abandoned by logout is still in flight', async () => {
+        await auth.startAuth(PHONE);
+        const original = gram.onInvoke;
+        let finishSignIn;
+        gram.onInvoke = () => new Promise(resolve => { finishSignIn = resolve; });
+        const stale = auth.provideCode(CODE);
+        const staleRejected = expect(stale).rejects.toMatchObject({ reason: auth.REASONS.NO_PENDING });
+        for (let i = 0; i < 15; i++) await Promise.resolve();
+        expect(finishSignIn).toBeTypeOf('function');
+        await auth.logout();
+        gram.onInvoke = original;
+        // Regression: the abandoned step kept the auth lock until it settled.
+        await auth.startAuth(PHONE);
+        expect(auth.getAuthState().stage).not.toBe(null);
+        finishSignIn({ className: 'auth.Authorization' });
+        await staleRejected;
+        expect(sessionStore.hasSession()).toBe(false);
+        expect(auth.getAuthState().isAuthInProgress).toBe(false);
+    });
+
     it('bounds sign-in RPCs and rejects a late success after timeout', async () => {
         vi.useFakeTimers();
         await auth.startAuth(PHONE);
