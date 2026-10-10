@@ -120,7 +120,7 @@ oom:
 
 void result_window_push_phone_unreachable(void) {
   result_window_push(ResultToneError, "Phone unreachable",
-      "Squire couldn't reach the Pebble app on your phone. Check Bluetooth, then try again.",
+      "Squire Plus couldn't reach the Pebble app on your phone. Check Bluetooth, then try again.",
       RESULT_WINDOW_PERSISTENT);
 }
 

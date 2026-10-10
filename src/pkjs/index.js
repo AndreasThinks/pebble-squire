@@ -288,7 +288,7 @@ function handleAppMessage(e) {
 
 function doCobbleWarning() {
     if (window.cobble) {
-        console.log("WARNING: Running Squire on Cobble is not supported, and has multiple known issues.");
+        console.log("WARNING: Running Squire Plus on Cobble is not supported, and has multiple known issues.");
         send({COBBLE_WARNING: 1});
     }
 }
@@ -298,7 +298,7 @@ Pebble.addEventListener("ready",
         // This happens before anything else because I don't trust Cobble to get through the normal flow,
         // given how many things bizarrely don't work.
         doCobbleWarning();
-        console.log("Squire " + package_json['version']);
+        console.log("Squire Plus " + package_json['version']);
 
         main();
     }

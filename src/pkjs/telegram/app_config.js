@@ -31,7 +31,7 @@ function isConfigured() {
 // Returns {apiId, apiHash}, or throws an error with code APP_NOT_CONFIGURED.
 function getCredentials() {
     if (!isConfigured()) {
-        var err = new Error('This build of Squire has no Telegram API credentials (TELEGRAM_APP_ID / TELEGRAM_APP_HASH).');
+        var err = new Error('This build of Squire Plus has no Telegram API credentials (TELEGRAM_APP_ID / TELEGRAM_APP_HASH).');
         err.code = 'APP_NOT_CONFIGURED';
         throw err;
     }

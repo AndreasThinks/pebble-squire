@@ -1,15 +1,23 @@
-# Squire
+# Squire Plus
 ## Version %d.%d
-Your AI agent, on your wrist. Squire carries your words to the agent you run and brings its answers back.
+Your AI agent, on your wrist. Uses the Telegram API to connect to your own agent bot.
 
-## Original Project
-Based on Bobby by Katharine Berry
+## Maintainer
+Andreas Varotsis
+https://github.com/AndreasThinks/pebble-squire
+
+## Upstream projects
+Squire by Justin Sunseri
 https://github.com/jmsunseri/pebble-squire
+Based on Bobby by Katharine Berry
 
-## Programming
+## Original programming
 Katharine Berry
 Justin Sunseri
 
-## Iconography
+## Original iconography
 Stasia Michalska <lcp.world>
 Justin Sunseri
+
+## Licence
+Apache 2.0. Original copyright notices retained.

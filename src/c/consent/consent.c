@@ -378,7 +378,7 @@ static void prv_location_reply_timed_out(void *context) {
     data->action_menu = NULL;
   }
   result_window_push(ResultToneError, "No answer from phone",
-      "Squire couldn't confirm your location choice with the Pebble app on your phone. Check Bluetooth, then press SELECT to choose again.",
+      "Squire Plus couldn't confirm your location choice with the Pebble app on your phone. Check Bluetooth, then press SELECT to choose again.",
       RESULT_WINDOW_PERSISTENT);
 }
 

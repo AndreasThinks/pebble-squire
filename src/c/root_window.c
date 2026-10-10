@@ -314,7 +314,7 @@ static void prv_more_clicked(ClickRecognizerRef recognizer, void* context) {
   if (connected) {
     action_menu_level_add_action(level, "Resume last chat", prv_menu_resume, rw);
   }
-  action_menu_level_add_action(level, "About Squire", prv_menu_about, NULL);
+  action_menu_level_add_action(level, "About", prv_menu_about, NULL);
   action_menu_level_set_separator_index(level, connected ? 2 : 1);
   if (connected) {
     action_menu_level_add_action(level, "Sign out", prv_menu_disconnect, rw);
@@ -346,7 +346,7 @@ static void prv_menu_sign_in(ActionMenu *action_menu, const ActionMenuItem *acti
 static void prv_menu_disconnect(ActionMenu *action_menu, const ActionMenuItem *action, void *context) {
   RootWindow* rw = context;
   if (!settings_is_telegram_connected()) {
-    result_window_push(ResultToneInfo, "Not signed in", "Squire isn't signed in to Telegram.", RESULT_WINDOW_SHORT_MS);
+    result_window_push(ResultToneInfo, "Not signed in", "Squire Plus isn't signed in to Telegram.", RESULT_WINDOW_SHORT_MS);
     return;
   }
   ActionMenuLevel *confirm_level = baction_menu_level_create(2);

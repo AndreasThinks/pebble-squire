@@ -108,7 +108,7 @@ static void prv_app_message_handler(DictionaryIterator *iter, void *context) {
         result_window_push(ResultToneSuccess, "Signed out", "This watch's Telegram session was ended on Telegram's servers.", RESULT_WINDOW_SHORT_MS);
       } else {
         result_window_push(ResultToneWarning, "Signed out here only",
-            "Squire forgot its Telegram session, but couldn't reach Telegram to end it. Remove \"Squire\" under Telegram > Settings > Devices.",
+            "Squire Plus forgot its Telegram session, but couldn't reach Telegram to end it. Remove \"Squire Plus\" under Telegram > Settings > Devices.",
             RESULT_WINDOW_PERSISTENT);
       }
     }

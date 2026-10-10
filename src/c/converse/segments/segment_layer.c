@@ -28,10 +28,10 @@
 
 
 // The speaker label above the first reply after a prompt: a small gold seal
-// and "Squire" in azure ink, so the start of each answer is easy to find when
+// and "Squire Plus" in azure ink, so the start of each answer is easy to find when
 // scrolling back.
 #define NAME_HEIGHT 22
-#define NAME_TEXT "Squire"
+#define NAME_TEXT "Squire Plus"
 #define NAME_INSET (SQUIRE_SPACE_M + SQUIRE_ROUND_INSET)
 #define SEAL_RADIUS 4
 

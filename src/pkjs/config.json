@@ -1,7 +1,7 @@
 [
     {
         "type": "heading",
-        "defaultValue": "Squire",
+        "defaultValue": "Squire Plus",
         "size": 1
     },
 
@@ -16,7 +16,7 @@
                 "type": "select",
                 "messageKey": "QUICK_LAUNCH_BEHAVIOUR",
                 "label": "Quick launch behaviour",
-                "description": "Start conversation and time out closes Squire after a minute of inactivity once the reply is complete. Stay open keeps the conversation open. Open home screen behaves the same as launching from the app launcher.",
+                "description": "Start conversation and time out closes Squire Plus after a minute of inactivity once the reply is complete. Stay open keeps the conversation open. Open home screen behaves the same as launching from the app launcher.",
                 "defaultValue": "1",
                 "options": [
                     {"label": "Start conversation and time out", "value": "1"},
@@ -29,7 +29,7 @@
                 "messageKey": "CONFIRM_TRANSCRIPTS",
                 "defaultValue": false,
                 "label": "Confirm prompts before responding",
-                "description": "When enabled, after dictating to the watch, you'll always be asked to confirm your input before Squire takes action. When disabled, Squire will respond immediately to whatever was recognised."
+                "description": "When enabled, after dictating to the watch, you'll always be asked to confirm your input before Squire Plus takes action. When disabled, Squire Plus will respond immediately to whatever was recognised."
             }
         ]
     },
@@ -45,7 +45,7 @@
                 "messageKey": "LOCATION_ENABLED",
                 "defaultValue": false,
                 "label": "Allow location access",
-                "description": "Squire can use your location to provide contextually relevant information, including local weather and transit as well as more broadly understanding your local context."
+                "description": "Squire Plus can use your location to provide contextually relevant information, including local weather and transit as well as more broadly understanding your local context."
             }
         ]
     },
@@ -67,7 +67,7 @@
                 "id": "backendBot",
                 "messageKey": "AGENT_TELEGRAM_USERNAME",
                 "label": "Agent Bot Username",
-                "description": "Enter the username of your OpenClaw or Hermes bot (e.g., @MyOpenClawBot or @MyHermesBot). It must be a Telegram bot account; Squire won't send prompts until this is set.",
+                "description": "Enter the username of your OpenClaw or Hermes bot (e.g., @MyOpenClawBot or @MyHermesBot). It must be a Telegram bot account; Squire Plus won't send prompts until this is set.",
                 "defaultValue": "",
                 "attributes": {
                     "placeholder": "@MyHermesBot",

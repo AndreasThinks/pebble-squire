@@ -49,7 +49,7 @@ function retireClient(c) {
 
 var CLIENT_OPTIONS = {
     connectionRetries: 5,
-    deviceModel: 'Squire',
+    deviceModel: 'Squire Plus',
     systemVersion: '1.0',
     appVersion: '1.0'
 };

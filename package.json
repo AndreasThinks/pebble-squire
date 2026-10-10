@@ -1,6 +1,6 @@
 {
-  "name": "Squire",
-  "author": "Justin Sunseri",
+  "name": "squire-plus",
+  "author": "Andreas Varotsis",
   "version": "0.1.0",
   "keywords": [
     "pebble-app"
@@ -15,8 +15,8 @@
     "pebble-events": "^1.2.1"
   },
   "pebble": {
-    "displayName": "Squire",
-    "uuid": "1d272bb4-cf00-4e3e-a7f3-7394309e0341",
+    "displayName": "Squire Plus",
+    "uuid": "6f97ab75-3f6b-461b-9750-e6486c6d01cb",
     "sdkVersion": "3",
     "enableMultiJS": true,
     "capabilities": [
@@ -187,5 +187,10 @@
   "devDependencies": {
     "dotenv": "^17.4.2",
     "vitest": "^4.1.5"
-  }
+  },
+  "contributors": [
+    "Katharine Berry",
+    "Justin Sunseri",
+    "Stasia Michalska"
+  ]
 }

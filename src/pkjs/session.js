@@ -129,16 +129,16 @@ Session.prototype.run = function() {
         // The watch may still think it's signed in; correct it, so its home
         // screen offers sign-in rather than another doomed request.
         messageQueue.enqueue({ TELEGRAM_CONNECTED: 0 });
-        this.finish('Not signed in to Telegram. Sign in from the watch or from Squire\'s settings on your phone.');
+        this.finish('Not signed in to Telegram. Sign in from the watch or from Squire Plus\'s settings on your phone.');
         return this.done;
     }
     if (!telegram.isAppConfigured()) {
-        this.finish('This build of Squire has no Telegram API credentials, so it can\'t talk to Telegram.');
+        this.finish('This build of Squire Plus has no Telegram API credentials, so it can\'t talk to Telegram.');
         return this.done;
     }
     this.botUsername = telegram.getBotUsername();
     if (!this.botUsername) {
-        this.finish('No agent bot is set up. Enter your bot\'s username (e.g. @MyHermesBot) in Squire\'s settings on your phone.');
+        this.finish('No agent bot is set up. Enter your bot\'s username (e.g. @MyHermesBot) in Squire Plus\'s settings on your phone.');
         return this.done;
     }
     var trimmed = this.prompt.trim();
@@ -203,12 +203,12 @@ Session.prototype.resolveBot = function() {
     return Promise.resolve(this.client.getEntity(username)).then(function(entity) {
         if (self.finished) return null;
         if (!entity || entity.className !== 'User' || entity.id === undefined || entity.id === null) {
-            self.finish(self.botUsername + ' isn\'t a Telegram bot account. Check the agent bot username in Squire\'s settings.');
+            self.finish(self.botUsername + ' isn\'t a Telegram bot account. Check the agent bot username in Squire Plus\'s settings.');
             return null;
         }
         if (entity.bot !== true) {
             // Never send prompts (and location) to a person by mistake.
-            self.finish(self.botUsername + ' is a regular user, not a bot. Squire only talks to agent bots.');
+            self.finish(self.botUsername + ' is a regular user, not a bot. Squire Plus only talks to agent bots.');
             return null;
         }
         self.botId = entity.id;
@@ -216,7 +216,7 @@ Session.prototype.resolveBot = function() {
     }, function(err) {
         if (self.finished) return null;
         console.error('[session] Could not resolve agent bot: ' + describeError(err));
-        self.finish('Couldn\'t find ' + self.botUsername + ' on Telegram. Check the agent bot username in Squire\'s settings.');
+        self.finish('Couldn\'t find ' + self.botUsername + ' on Telegram. Check the agent bot username in Squire Plus\'s settings.');
         return null;
     });
 };
@@ -527,16 +527,16 @@ var REVOKED_SESSION_RE = /AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|SESSION_REVO
 function userFacingError(err, botUsername) {
     var text = describeError(err);
     if (err && err.code === 'APP_NOT_CONFIGURED') {
-        return 'This build of Squire has no Telegram API credentials, so it can\'t talk to Telegram.';
+        return 'This build of Squire Plus has no Telegram API credentials, so it can\'t talk to Telegram.';
     }
     if (err && err.code === 'SECURE_RANDOM_UNAVAILABLE') {
         return 'This phone runtime cannot connect securely to Telegram. It needs crypto.getRandomValues support.';
     }
     if (/re-authenticate|session expired|No Telegram session/i.test(text) || REVOKED_SESSION_RE.test(text)) {
-        return 'Telegram session expired. Sign in again from the watch or Squire\'s settings.';
+        return 'Telegram session expired. Sign in again from the watch or Squire Plus\'s settings.';
     }
     if (/USERNAME_(NOT_OCCUPIED|INVALID)|Cannot find any entity|No user has/i.test(text)) {
-        return 'Couldn\'t find ' + botUsername + ' on Telegram. Check the agent bot username in Squire\'s settings.';
+        return 'Couldn\'t find ' + botUsername + ' on Telegram. Check the agent bot username in Squire Plus\'s settings.';
     }
     if (/YOU_BLOCKED_USER|USER_IS_BLOCKED|PEER_ID_INVALID/.test(text)) {
         return 'Telegram won\'t deliver messages to ' + botUsername + '. Unblock it or start a chat with it in Telegram first.';

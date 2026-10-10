@@ -15,7 +15,7 @@
  */
 
 /**
- * Configuration module for Squire.
+ * Configuration module for Squire Plus.
  * Client-side configuration - no backend needed.
  */
 

@@ -41,11 +41,11 @@ static const char* prv_error_message(int32_t reason) {
     case AuthErrorFloodWait:
       return "Too many attempts. Telegram asks you to wait before trying again.";
     case AuthErrorBadPassword:
-      return "Incorrect two-step verification password. Re-enter it in Squire's settings on your phone.";
+      return "Incorrect two-step verification password. Re-enter it in Squire Plus's settings on your phone.";
     case AuthErrorNoPendingSignIn:
       return "The sign-in attempt expired. Start again.";
     case AuthErrorAppNotConfigured:
-      return "This build of Squire has no Telegram API credentials. Rebuild it with TELEGRAM_APP_ID and TELEGRAM_APP_HASH set.";
+      return "This build of Squire Plus has no Telegram API credentials. Rebuild it with TELEGRAM_APP_ID and TELEGRAM_APP_HASH set.";
     case AuthErrorNetwork:
       return "Couldn't reach Telegram. Check your phone's connection and try again.";
     case AuthErrorNoAccount:
@@ -159,7 +159,7 @@ void auth_flow_handle_message(uint32_t key, const char* value, int32_t number) {
     // settings page, TELEGRAM_CONNECTED will arrive and complete it.
     prv_dismiss_progress();
     result_window_push(ResultToneWarning, "Password needed",
-        "Your account has a Telegram cloud password. Open Squire's settings in the Pebble phone app and enter it there to finish signing in.",
+        "Your account has a Telegram cloud password. Open Squire Plus's settings in the Pebble phone app and enter it there to finish signing in.",
         RESULT_WINDOW_PERSISTENT);
     s_waiting_for_code = false;
   } else if (key == MESSAGE_KEY_TELEGRAM_AUTH_ERROR) {

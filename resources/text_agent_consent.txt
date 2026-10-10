@@ -1,7 +1,7 @@
-Squire talks to your agent's bot through your own Telegram account. There is no Squire server.
+Squire Plus talks to your agent's bot through your own Telegram account. There is no Squire Plus server.
 
-- Everything you say to Squire is sent through Telegram to your agent backend (OpenClaw or Hermes).
+- Everything you say to Squire Plus is sent through Telegram to your agent backend (OpenClaw or Hermes).
 - That backend is run by you or a third party, not by this app. What it keeps and does depends on its setup.
-- Your Telegram session and agent bot username are stored in the Pebble phone app. The session can act as your Telegram account until it is revoked. Signing out in Squire asks Telegram to revoke it.
+- Your Telegram session and agent bot username are stored in the Pebble phone app. The session can act as your Telegram account until it is revoked. Signing out in Squire Plus asks Telegram to revoke it.
 
-By continuing to use Squire, you agree to these terms.
+By continuing to use Squire Plus, you agree to these terms.

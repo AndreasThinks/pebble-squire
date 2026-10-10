@@ -1,5 +1,5 @@
-Squire can include your precise location (latitude and longitude) with each request, so your agent can answer questions like "what's nearby?".
+Squire Plus can include your precise location (latitude and longitude) with each request, so your agent can answer questions like "what's nearby?".
 
-It is sent through Telegram to your agent bot. You can change this later in Squire's settings on your phone.
+It is sent through Telegram to your agent bot. You can change this later in Squire Plus's settings on your phone.
 
-Can Squire share your location?
+Can Squire Plus share your location?

@@ -1,11 +1,9 @@
-# Squire v0.1
+# Squire Plus v0.1
 
-Squire is a fork of Bobby v1.4.
+An independently maintained fork of Squire by Justin Sunseri, based on Bobby by Katharine Berry.
 
-## What's new
+## What is new
+A refreshed watch interface, clearer onboarding and sign-in, improved conversation history, and more reliable message delivery.
 
-This is the first release of Squire! Squire connects you to AI assistants via Telegram, giving your Pebble agentic superpowers.
-
-## Telegram Integration
-
-Squire works by connecting to a Telegram bot connected to either Hermes or OpenClaw. Once connected, you can chat with your AI assistant right from your wrist.
+## Setup
+Sign in to Telegram and choose your own Hermes or OpenClaw agent bot. Squire Plus is a separate app and does not reuse the original Squire login or settings.

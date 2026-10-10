@@ -127,7 +127,7 @@ static void prv_auth_flow_complete(bool success, const char* agent_username) {
     } else {
       // Signed in, but nobody to talk to yet: the next step is on the phone.
       result_window_push(ResultToneWarning, "Signed in",
-          "One more step: set your agent bot's username in Squire's settings in the Pebble phone app.",
+          "One more step: set your agent bot's username in Squire Plus's settings in the Pebble phone app.",
           RESULT_WINDOW_PERSISTENT);
     }
   }
