@@ -14,7 +14,7 @@ The phone connects directly to Telegram. There is no separate Squire server, but
 - A Pebble phone app with working PebbleKit JS, WebSockets and a secure `crypto.getRandomValues` implementation. Squire refuses Telegram connections when secure randomness is unavailable. Cobble has known compatibility issues and is not supported. A successful build or emulator launch does not establish phone compatibility.
 - An existing Telegram account and a bot configured in your Hermes or OpenClaw backend.
 - Telegram application credentials (`api_id` and `api_hash`) from [my.telegram.org/apps](https://my.telegram.org/apps). These identify the Telegram client; they are different from your bot's BotFather token.
-- For development: Node.js 22 or 24, Python 3.10+ (tested with 3.12), a C compiler and Make for host tests, and the Pebble SDK. The validated tool versions are `pebble-tool` 5.0.40 and SDK 4.33.1.
+- For development: Node.js 24 with npm 11.9.0, Python 3.10+ (tested with 3.12), a C compiler and Make for host tests, and the Pebble SDK. The validated tool versions are `pebble-tool` 5.0.40 and SDK 4.33.1. npm 10.9.9 crashes resolving the root dependencies; use the validated npm version (`npm install --global npm@11.9.0`).
 
 ### Set up the agent bot
 

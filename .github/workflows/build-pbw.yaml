@@ -30,7 +30,9 @@ jobs:
           echo "COMMIT_SHORT_SHA=$calculatedSha" >> $GITHUB_ENV
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
+      - name: install validated npm version
+        run: npm install --global npm@11.9.0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
