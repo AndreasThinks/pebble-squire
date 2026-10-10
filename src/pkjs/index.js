@@ -111,6 +111,7 @@ Pebble.addEventListener('webviewclosed', function(e) {
         return;
     }
 
+    location.update();
     send(Clay.prepareSettingsForAppMessage(settings));
 
     var newBot = telegram.getBotUsername();
@@ -208,6 +209,7 @@ function sendTelegramStatus() {
 function handleTelegramDisconnect() {
     console.log('[index] Disconnecting from Telegram');
     session.cancelActiveSession();
+    history.clearHistory();
     return telegram.logout().then(function(result) {
         var revoked = !!(result && result.revoked);
         console.log('[index] Signed out (' + (revoked ? 'revoked on server' : 'local only') + ')');
@@ -270,6 +272,7 @@ function handleAppMessage(e) {
 
     if ('LOCATION_ENABLED' in data) {
         config.setSetting("LOCATION_ENABLED", !!data.LOCATION_ENABLED);
+        location.update();
         console.log("Location enabled: " + config.isLocationEnabled());
         // We need to confirm that we received this for the watch to proceed.
         send({

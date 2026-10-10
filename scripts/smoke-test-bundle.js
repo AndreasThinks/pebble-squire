@@ -247,6 +247,13 @@ async function runScenario(code, options) {
     ok(typeof g.Buffer === 'function', 'global Buffer available after load');
     ok(g.window && g.window.location && typeof g.window.location.protocol === 'string', 'window.location present');
     ok(g.crypto && typeof g.crypto.getRandomValues === 'function', 'crypto.getRandomValues present');
+    try {
+        vm.runInContext('crypto.getRandomValues(new Uint8Array(16))', env.context);
+        ok(!!options.cryptoGetRandomValues, 'randomness comes from the host runtime');
+    } catch (err) {
+        ok(!options.cryptoGetRandomValues && /Secure random source unavailable/.test(err.message),
+            'runtime without secure randomness refuses to generate auth secrets');
+    }
     ok(typeof g.WebSocket === 'function' && g.WebSocket.__pebblegramWrapped === true, 'WebSocket wrapped with event buffering');
 
     try {

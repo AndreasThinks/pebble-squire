@@ -1,4 +1,4 @@
-#!/home/justin/.local/share/uv/tools/pebble-tool/bin/python3
+#!/usr/bin/env python3
 """Build, install, and open the Clay config page in one command."""
 
 import subprocess

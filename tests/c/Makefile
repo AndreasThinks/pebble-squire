@@ -17,8 +17,13 @@ SOURCES := test_watch.c stubs/pebble_stubs.c \
 BUILD := build
 
 .PHONY: test clean
-test: $(BUILD)/test_watch
+test: $(BUILD)/test_watch $(BUILD)/test_formatted_text
 	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 ./$(BUILD)/test_watch
+	ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 ./$(BUILD)/test_formatted_text
+
+$(BUILD)/test_formatted_text: test_formatted_text.c text_stubs/pebble.h $(SRC)/util/formatted_text_layer.c
+	@mkdir -p $(BUILD)
+	$(CC) -Itext_stubs $(CFLAGS) -o $@ test_formatted_text.c $(SRC)/util/formatted_text_layer.c
 
 $(BUILD)/test_watch: $(SOURCES) stubs/pebble.h stubs/test_support.h
 	@mkdir -p $(BUILD)

@@ -141,6 +141,9 @@ Session.prototype.run = function() {
     }
 
     var message = this.buildMessage();
+    // Include connection, bot lookup and sendMessage in the deadline too.
+    // An RPC that never settles must not leave the watch waiting forever.
+    this.hardTimer = setTimeout(function() { self.onHardTimeout(); }, HARD_TIMEOUT_MS);
     console.log('[session] Sending prompt (' + trimmed.length + ' chars) to agent');
     telegram.initClient().then(function() {
         if (self.finished) return null;
@@ -162,7 +165,6 @@ Session.prototype.run = function() {
         }
         self.sentId = sent.id;
         console.log('[session] Prompt sent, waiting for reply');
-        self.hardTimer = setTimeout(function() { self.onHardTimeout(); }, HARD_TIMEOUT_MS);
         self.armActivityTimer();
         var buffered = self.buffered;
         self.buffered = [];
@@ -502,6 +504,9 @@ function userFacingError(err, botUsername) {
     var text = describeError(err);
     if (err && err.code === 'APP_NOT_CONFIGURED') {
         return 'This build of Squire has no Telegram API credentials, so it can\'t talk to Telegram.';
+    }
+    if (err && err.code === 'SECURE_RANDOM_UNAVAILABLE') {
+        return 'This phone runtime cannot connect securely to Telegram. It needs crypto.getRandomValues support.';
     }
     if (/re-authenticate|session expired|No Telegram session/i.test(text)) {
         return 'Telegram session expired. Sign in again from the watch or Squire\'s settings.';

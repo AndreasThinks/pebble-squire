@@ -38,6 +38,7 @@ describe('history transport', () => {
     });
 
     afterEach(() => {
+        vi.useRealTimers();
         Queue.reset();
         vi.restoreAllMocks();
     });
@@ -103,6 +104,53 @@ describe('history transport', () => {
         expect(sent.filter(m => m.HISTORY_BEGIN).length).toBe(1);
         expect(sent.some(m => m.HISTORY_PROMPT === 'older')).toBe(false);
         expect(sent.some(m => m.HISTORY_PROMPT === 'newer')).toBe(true);
+    });
+
+    it('times out a stalled fetch and ignores its eventual result', async () => {
+        vi.useFakeTimers();
+        let finishFetch;
+        getMessages.mockImplementationOnce(() => new Promise(resolve => { finishFetch = resolve; }));
+        const fetch = history.fetchAndSendHistory();
+        await vi.advanceTimersByTimeAsync(60000);
+        await fetch;
+        expect(sent).toEqual([{ HISTORY_BEGIN: 1 }, { HISTORY_DONE: 2 }]);
+        finishFetch([own(1, 'late result')]);
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+        expect(sent).toHaveLength(2);
+    });
+
+    it('does not restore history when a fetch finishes after sign-out', async () => {
+        let finishFetch;
+        getMessages.mockImplementationOnce(() => new Promise(resolve => { finishFetch = resolve; }));
+        const fetch = history.fetchAndSendHistory();
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+        history.clearHistory();
+        finishFetch([own(1, 'private old history')]);
+        await fetch;
+        expect(sent).toEqual([{ HISTORY_BEGIN: 1 }, { HISTORY_DONE: 1 }]);
+    });
+
+    it('clears a partial batch after an entry cannot be delivered', async () => {
+        vi.useFakeTimers();
+        messages = [bot(2, 'answer'), own(1, 'prompt')];
+        global.Pebble.sendAppMessage = vi.fn((msg, ok, fail) => {
+            if ('HISTORY_PROMPT' in msg) fail();
+            else { sent.push(msg); ok(); }
+        });
+        await history.fetchAndSendHistory();
+        await vi.runAllTimersAsync();
+        expect(sent).toEqual([
+            { HISTORY_BEGIN: 1 },
+            { HISTORY_BEGIN: 1 },
+            { HISTORY_DONE: 2 },
+        ]);
+        expect(Queue.size()).toBe(0);
+    });
+
+    it('does not revive an older thread after an untagged prompt', async () => {
+        messages = [own(3, 'new conversation'), own(1, '[thread:old-thread] old prompt')];
+        await history.fetchAndSendHistory();
+        expect(sent.some(m => 'HISTORY_THREAD_ID' in m)).toBe(false);
     });
 
     it('ignores thread ids that are not well-formed', async () => {

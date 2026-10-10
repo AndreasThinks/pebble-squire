@@ -50,6 +50,8 @@ static const char* prv_error_message(int32_t reason) {
       return "Couldn't reach Telegram. Check your phone's connection and try again.";
     case AuthErrorNoAccount:
       return "There's no Telegram account for that number. Sign up in the Telegram app first.";
+    case AuthErrorSecureRandomUnavailable:
+      return "This phone runtime cannot connect securely to Telegram. Use a runtime with crypto.getRandomValues support.";
     default:
       return "Could not sign in to Telegram. Please try again.";
   }

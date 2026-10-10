@@ -124,6 +124,21 @@ describe('Session', () => {
         });
     });
 
+    it('times out a send that never settles and ignores its eventual reply', async () => {
+        setup({ deferSend: true, sentId: 200 });
+        const session = start();
+        await flush();
+        await vi.advanceTimersByTimeAsync(sessionModule.HARD_TIMEOUT_MS);
+        await expect(session.done).resolves.toMatchObject({ complete: false });
+        expect(doneCount()).toBe(1);
+        expect(client.handlers).toHaveLength(0);
+        client.resolveSend(200);
+        await flush();
+        client.emitNewMessage(botMessage(201, 'too late'));
+        expect(chatText()).toBe('');
+        expect(doneCount()).toBe(1);
+    });
+
     describe('bot configuration', () => {
         it('never sends when no bot is configured (no @MyAgentBot default)', async () => {
             botUsername = '';

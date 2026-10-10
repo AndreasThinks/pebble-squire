@@ -31,16 +31,12 @@ if (!G.Buffer) G.Buffer = BufferImpl;
 if (!G.window.Buffer) G.window.Buffer = G.Buffer;
 
 // crypto.getRandomValues is used for nonces, session ids and DH secrets.
-// SECURITY NOTE: the Math.random() fallback is NOT cryptographically secure.
-// It only exists because some PKJS hosts expose no crypto object at all; it is
-// kept for behavioural parity with the bundle that shipped before the build
-// was made reproducible.
+// Never substitute Math.random(): predictable DH secrets compromise the
+// Telegram session. Unsupported hosts must fail before creating an auth key.
 if (!G.crypto) G.crypto = {};
 if (!G.crypto.getRandomValues) {
-    G.crypto.getRandomValues = function (array) {
-        var i;
-        for (i = 0; i < array.length; i += 1) array[i] = Math.floor(Math.random() * 256);
-        return array;
+    G.crypto.getRandomValues = function () {
+        throw new Error('Secure random source unavailable in this phone runtime');
     };
 }
 if (!G.window.crypto) G.window.crypto = G.crypto;

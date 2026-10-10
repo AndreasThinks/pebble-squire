@@ -16,7 +16,7 @@
                 "type": "select",
                 "messageKey": "QUICK_LAUNCH_BEHAVIOUR",
                 "label": "Quick launch behaviour",
-                "description": "What to do when Squire is launched via Quick Launch. If 'start conversation' is selected, Squire will start listening immediately. If 'stay open' is chosen, Squire will quit after a minute of inactivity. If 'open home screen' is chosen, Squire will behave the same as if launched from the app launcher.",
+                "description": "Start conversation and time out closes Squire after a minute of inactivity once the reply is complete. Stay open keeps the conversation open. Open home screen behaves the same as launching from the app launcher.",
                 "defaultValue": "1",
                 "options": [
                     {"label": "Start conversation and time out", "value": "1"},
@@ -43,7 +43,7 @@
             {
                 "type": "toggle",
                 "messageKey": "LOCATION_ENABLED",
-                "defaultValue": true,
+                "defaultValue": false,
                 "label": "Allow location access",
                 "description": "Squire can use your location to provide contextually relevant information, including local weather and transit as well as more broadly understanding your local context."
             }
@@ -133,7 +133,7 @@
             {
                 "type": "text",
                 "label": "Need help?",
-                "defaultValue": "Report issues at github.com/jmsunseri/pebble-squire/issues"
+                "defaultValue": "Report issues at github.com/AndreasThinks/pebble-squire/issues"
             }
         ]
     },

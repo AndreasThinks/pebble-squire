@@ -169,6 +169,7 @@ static void prv_window_unload(Window *window) {
   gbitmap_destroy(data->select_indicator_bitmap);
   bitmap_layer_destroy(data->select_indicator_layer);
   layer_destroy(data->content_indicator_layer);
+  free(data->current_text);
   free(data);
 }
 

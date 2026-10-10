@@ -56,6 +56,9 @@ static void prv_layout(FormattedTextLayer* layer);
 
 FormattedTextLayer* formatted_text_layer_create(GRect frame) {
   Layer *layer = blayer_create_with_data(frame, sizeof(FormattedTextLayerData));
+  if (!layer) {
+    return NULL;
+  }
   FormattedTextLayerData *data = layer_get_data(layer);
   memset(data, 0, sizeof(FormattedTextLayerData));
   data->title_font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
@@ -123,15 +126,16 @@ static void prv_layer_update(Layer *layer, GContext *ctx) {
   };
   graphics_context_set_text_color(ctx, data->text_color);
   char *buffer = bmalloc(data->largest_fragment_length + 1);
+  if (!buffer) {
+    return;
+  }
   for (size_t i = 0; i < data->fragment_count; ++i) {
     TextFragment *fragment = &data->fragments[i];
     if (fragment->text_length == 0) {
       continue;
     }
-    // If we're off the bottom of the screen, stop - there's no more work to do.
-    if (layer_convert_point_to_screen(layer, GPoint(0, fragment->vertical_offset)).y > 168) {
-      break;
-    }
+    // Let graphics clipping handle the lower edge: displays can be taller
+    // than the original Pebble's 168 pixels.
     // If the next fragment starts before the beginning of the screen, skip ahead.
     if (i < data->fragment_count - 1) {
       TextFragment *next_fragment = &data->fragments[i+1];
@@ -152,9 +156,14 @@ static void prv_fragment(FormattedTextLayerData *data) {
   if (data->fragments) {
     free(data->fragments);
   }
+  data->fragment_count = 0;
+  data->total_height = 0;
   int max_fragment_count = prv_segment_upper_bound(data->text);
   data->largest_fragment_length = 0;
   data->fragments = bmalloc(max_fragment_count * sizeof(TextFragment));
+  if (!data->fragments) {
+    return;
+  }
   size_t text_length = strlen(data->text);
   const char* ptr = data->text;
   TextFragment* last_fragment = &data->fragments[data->fragment_count++];
@@ -192,6 +201,9 @@ static void prv_fragment(FormattedTextLayerData *data) {
         fragment->type = FragmentTypeSubtitle;
         break;
     }
+    if (fragment->text_length > data->largest_fragment_length) {
+      data->largest_fragment_length = fragment->text_length;
+    }
     ptr = fragment->text + fragment->text_length;
     if (*ptr == '\n') {
       ++ptr;
@@ -214,6 +226,10 @@ static void prv_layout(FormattedTextLayer* layer) {
   GRect sizing_frame = GRect(0, 0, bounds.size.w, 10000);
 
   char *buffer = bmalloc(data->largest_fragment_length + 1);
+  if (!buffer) {
+    data->total_height = 0;
+    return;
+  }
 
   GFont font_lookup[3] = {
     data->title_font,
@@ -226,13 +242,15 @@ static void prv_layout(FormattedTextLayer* layer) {
   for (size_t i = 0; i < data->fragment_count; ++i) {
     // We need to copy the text out of the fragment, because it's not null-terminated, and Pebble doesn't take lengths.
     TextFragment *fragment = &data->fragments[i];
+    // Empty fragments still participate in visibility checks for the previous
+    // fragment, so their offset must also be initialized.
+    fragment->vertical_offset = y;
     if (fragment->text_length == 0) {
       continue;
     }
     strncpy(buffer, fragment->text, fragment->text_length);
     buffer[fragment->text_length] = '\0';
     GSize size = graphics_text_layout_get_content_size(buffer, font_lookup[fragment->type], sizing_frame, GTextOverflowModeWordWrap, data->alignment);
-    fragment->vertical_offset = y;
     y += size.h;
   }
   data->total_height = y;

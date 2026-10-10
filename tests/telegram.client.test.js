@@ -34,10 +34,57 @@ describe('Telegram client lifecycle', () => {
         expect(gram.instances.length).toBe(1);
     });
 
+    it('refuses a runtime without secure randomness before connecting', async () => {
+        const source = global.crypto.getRandomValues;
+        global.crypto.getRandomValues = () => { throw new Error('unavailable'); };
+        try {
+            await expect(client.initClient()).rejects.toMatchObject({ code: 'SECURE_RANDOM_UNAVAILABLE' });
+            expect(gram.instances).toHaveLength(0);
+            expect(sessionStore.hasSession()).toBe(true);
+        } finally {
+            global.crypto.getRandomValues = source;
+        }
+    });
+
     it('tears the old client down when reset', async () => {
         await client.initClient();
         await client.resetClient();
         expect(gram.instances[0].destroyed).toBe(true);
+    });
+
+    it('does not publish a connection that finishes after reset', async () => {
+        let authorize;
+        vi.spyOn(global.TelegramClient.prototype, 'isUserAuthorized').mockImplementation(
+            () => new Promise(resolve => { authorize = resolve; })
+        );
+        const connecting = client.initClient();
+        const rejected = expect(connecting).rejects.toThrow(/cancelled/);
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        expect(authorize).toBeTypeOf('function');
+        await client.resetClient();
+        authorize(true);
+        await rejected;
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        expect(client.getClient()).toBe(null);
+        expect(client.isClientConnected()).toBe(false);
+        expect(gram.instances[0].destroyed).toBe(true);
+    });
+
+    it('waits for old-client teardown before reconnecting with the same key', async () => {
+        await client.initClient();
+        const old = gram.instances[0];
+        let finishClosing;
+        old.destroy = vi.fn(() => new Promise(resolve => {
+            finishClosing = () => { old.connected = false; old.destroyed = true; resolve(); };
+        }));
+        old.connected = false;
+        const reconnect = client.initClient();
+        for (let i = 0; i < 12; i++) await Promise.resolve();
+        expect(gram.instances).toHaveLength(1);
+        finishClosing();
+        await reconnect;
+        expect(gram.instances).toHaveLength(2);
+        expect(old.destroyed).toBe(true);
     });
 
     it('clears a session Telegram has revoked and tells the watch', async () => {
@@ -61,6 +108,21 @@ describe('Telegram client lifecycle', () => {
         await client.initClient();
         await expect(client.disconnect()).resolves.toEqual({ revoked: false });
         expect(sessionStore.hasSession()).toBe(false);
+    });
+
+    it('clears local sign-in when the server logout RPC never settles', async () => {
+        vi.useFakeTimers();
+        try {
+            gram.onInvoke = () => new Promise(() => {});
+            await client.initClient();
+            const logout = client.disconnect();
+            await vi.advanceTimersByTimeAsync(30000);
+            await expect(logout).resolves.toEqual({ revoked: false });
+            expect(sessionStore.hasSession()).toBe(false);
+            expect(gram.instances[0].destroyed).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('reports a local-only sign-out when Telegram is unreachable', async () => {

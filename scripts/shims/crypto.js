@@ -10,7 +10,7 @@
 // is done synchronously with js-sha1 / js-sha256 / js-sha512 and PBKDF2 is
 // implemented on top of their HMAC functions. Randomness comes from
 // crypto.getRandomValues() of the host runtime (see pkjs-polyfills.js for the
-// fallback that is installed when the host has none).
+// fail-closed fallback that is installed when the host has none).
 //
 // The js-sha* libraries are required lazily: they themselves contain a
 // `require('crypto')` (for their Node fast path) which resolves back to this

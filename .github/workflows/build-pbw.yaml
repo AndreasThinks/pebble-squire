@@ -1,32 +1,28 @@
 name: Build Pebble app
 
 on:
-  # Triggers the workflow on push or pull request events for any branch (see commented out `branches` lines for  master branch example)
   push:
     paths:
       - 'src/**'
       - 'resources/**'
       - 'tests/**'
+      - 'scripts/**'
       - 'package.json'
+      - 'vitest.config.js'
       - 'wscript'
       - '.github/workflows/build-pbw.yaml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Clone Repository (Latest)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-        if: github.event.inputs.git-ref == ''
-      - name: Clone Repository (Custom Ref)
-        uses: actions/checkout@v4
-        if: github.event.inputs.git-ref != ''
-        with:
-          ref: ${{ github.event.inputs.git-ref }}
-          fetch-depth: 0
+      - uses: actions/checkout@v4
       - name: Set short git commit SHA
         id: vars
         run: |
@@ -39,13 +35,30 @@ jobs:
         with:
           python-version: '3.12'
       - name: js tests
-        run: npm install && npm test
+        run: npm install --package-lock=false && npm test
+      - name: watch C regression tests
+        run: make -C tests/c
+      - name: verify Telegram bundle
+        working-directory: scripts
+        run: |
+          npm ci
+          npm run verify:telegram
+          npm run smoke:telegram
       - name: install pebble tool
-        run: pip install pebble-tool
+        run: pip install pebble-tool==5.0.40
       - name: install sdk
-        run: yes | pebble sdk install latest
+        run: pebble sdk install 4.33.1 </dev/null
       - name: pebble-build
-        run: yes | pebble build
+        env:
+          TELEGRAM_APP_ID: ${{ secrets.TELEGRAM_APP_ID }}
+          TELEGRAM_APP_HASH: ${{ secrets.TELEGRAM_APP_HASH }}
+          npm_config_package_lock: 'false'
+        run: |
+          if [ -z "$TELEGRAM_APP_ID" ] && [ -z "$TELEGRAM_APP_HASH" ]; then
+            echo "Building without Telegram sign-in; set both repository secrets for a configured app."
+            export SQUIRE_ALLOW_UNCONFIGURED_TELEGRAM=1
+          fi
+          pebble build -- -j4
       - name: rename-app
         run: cp build/*.pbw Squire-g${{ env.COMMIT_SHORT_SHA }}.pbw
       - name: generate elf bundle

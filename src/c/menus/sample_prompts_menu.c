@@ -51,6 +51,9 @@ static int prv_load_prompts(char *buffer, size_t size, char ***prompts) {
     }
   }
   *prompts = bmalloc(sizeof(char*) * count);
+  if (!*prompts) {
+    return 0;
+  }
   char *p = buffer;
   for (int i = 0; i < count; ++i) {
     (*prompts)[i] = p;
@@ -103,8 +106,11 @@ static void prv_load_source(SamplePromptsMenuData *data) {
         prompt_count++;
       }
     }
-    data->count = prompt_count;
     data->prompts = bmalloc(sizeof(char*) * (prompt_count > 0 ? prompt_count : 1));
+    if (!data->prompts) {
+      return;
+    }
+    data->count = prompt_count;
     int idx = 0;
     for (int i = 0; i < hist_count && idx < prompt_count; i++) {
       const HistoryEntry *entry = history_get_entry(i);
@@ -123,6 +129,9 @@ static void prv_load_source(SamplePromptsMenuData *data) {
     // The resource is raw text with no terminator; add one so the last
     // prompt doesn't read past the end of the buffer.
     data->buffer = bmalloc(size + 1);
+    if (!data->buffer) {
+      return;
+    }
     resource_load(handle, (uint8_t*)data->buffer, size);
     data->buffer[size] = '\0';
     data->count = prv_load_prompts(data->buffer, size, &data->prompts);
@@ -137,6 +146,9 @@ static void prv_history_done(void) {
   SamplePromptsMenuData *data = window_get_user_data(s_window);
   prv_load_source(data);
   menu_layer_reload_data(data->menu_layer);
+  // Keep the open menu in sync with bot changes and sign-out too, rather
+  // than retaining pointers to history from the previous account/bot.
+  history_set_done_callback(prv_history_done);
 }
 
 static void prv_window_load(Window* window) {
@@ -146,9 +158,7 @@ static void prv_window_load(Window* window) {
 
   s_window = window;
   prv_load_source(data);
-  if (data->waiting_for_history) {
-    history_set_done_callback(prv_history_done);
-  }
+  history_set_done_callback(prv_history_done);
 
   window_set_background_color(window, GColorWhite);
 
@@ -173,9 +183,7 @@ static void prv_window_load(Window* window) {
 
 static void prv_window_unload(Window* window) {
   SamplePromptsMenuData *data = window_get_user_data(window);
-  if (data->waiting_for_history) {
-    history_set_done_callback(NULL);
-  }
+  history_set_done_callback(NULL);
   s_window = NULL;
   menu_layer_destroy(data->menu_layer);
   status_bar_layer_destroy(data->status_bar);

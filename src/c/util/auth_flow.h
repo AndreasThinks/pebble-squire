@@ -34,6 +34,7 @@ typedef enum {
   AuthErrorAppNotConfigured = 8,
   AuthErrorNetwork = 9,
   AuthErrorNoAccount = 10,
+  AuthErrorSecureRandomUnavailable = 11,
 } AuthErrorReason;
 
 void auth_flow_start(AuthFlowCompleteCallback callback);

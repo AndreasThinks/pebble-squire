@@ -52,7 +52,8 @@ var REASONS = {
     NO_PENDING: 7,
     APP_NOT_CONFIGURED: 8,
     NETWORK: 9,
-    NO_ACCOUNT: 10
+    NO_ACCOUNT: 10,
+    SECURE_RANDOM_UNAVAILABLE: 11
 };
 
 var PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
@@ -67,6 +68,7 @@ var AUTH_DC = {
 
 var authInProgress = false;
 var pending = null;
+var generation = 0;
 
 function AuthError(reason, message) {
     var err = new Error(message);
@@ -80,9 +82,15 @@ function withAuthLock(fn) {
             return Promise.reject(AuthError(REASONS.GENERIC, 'Authentication already in progress'));
         }
         authInProgress = true;
+        var mine = generation;
         var args = arguments;
         return Promise.resolve()
-            .then(function() { return fn.apply(null, args); })
+            .then(function() {
+                if (mine !== generation) {
+                    throw AuthError(REASONS.NO_PENDING, 'Sign-in was cancelled.');
+                }
+                return fn.apply(null, args);
+            })
             .then(function(result) {
                 authInProgress = false;
                 return result;
@@ -105,6 +113,9 @@ function classify(err) {
     }
     if (err && err.code === 'APP_NOT_CONFIGURED') {
         return AuthError(REASONS.APP_NOT_CONFIGURED, err.message);
+    }
+    if (err && err.code === 'SECURE_RANDOM_UNAVAILABLE') {
+        return AuthError(REASONS.SECURE_RANDOM_UNAVAILABLE, err.message);
     }
     var text = telegramErrorText(err);
     var reason = REASONS.GENERIC;
@@ -197,11 +208,26 @@ function withAuthClient(sessionString, setDc, step) {
         authClient.session.setDC(AUTH_DC.id, AUTH_DC.host, 443);
     }
     var Api = TelegramApi;
-    return withTimeout(authClient.connect(), CONNECT_TIMEOUT_MS).then(function() {
-        return step(authClient, Api);
+    var mine = generation;
+    var active = true;
+    function checkCurrent() {
+        if (!active || mine !== generation) {
+            throw AuthError(REASONS.NO_PENDING, 'Sign-in was cancelled. Request a new code.');
+        }
+    }
+    return withTimeout(Promise.resolve().then(function() { return authClient.connect(); }), CONNECT_TIMEOUT_MS).then(function() {
+        checkCurrent();
+        return withTimeout(Promise.resolve().then(function() {
+            return step(authClient, Api, checkCurrent);
+        }), CONNECT_TIMEOUT_MS);
     }).then(function(result) {
+        checkCurrent();
+        return result;
+    }).then(function(result) {
+        active = false;
         return client.destroyClient(authClient).then(function() { return result; });
     }, function(err) {
+        active = false;
         return client.destroyClient(authClient).then(function() { throw err; });
     });
 }
@@ -220,13 +246,14 @@ function startAuth(phoneNumber) {
     } catch (err) {
         return Promise.reject(classify(err));
     }
-    return withAuthClient('', true, function(authClient, Api) {
+    return withAuthClient('', true, function(authClient, Api, checkCurrent) {
         return authClient.invoke(new Api.auth.SendCode({
             phoneNumber: phone,
             apiId: creds.apiId,
             apiHash: creds.apiHash,
             settings: new Api.CodeSettings({})
         })).then(function(result) {
+            checkCurrent();
             if (!result || !result.phoneCodeHash) {
                 throw AuthError(REASONS.GENERIC, 'Telegram did not return a login code hash.');
             }
@@ -260,12 +287,13 @@ function provideCode(code) {
         return Promise.reject(AuthError(REASONS.NO_PENDING, 'No pending sign-in. Request a new code.'));
     }
     console.log('[auth] Submitting login code');
-    return withAuthClient(state.authSession, false, function(authClient, Api) {
+    return withAuthClient(state.authSession, false, function(authClient, Api, checkCurrent) {
         return authClient.invoke(new Api.auth.SignIn({
             phoneNumber: state.phone,
             phoneCodeHash: state.phoneCodeHash,
             phoneCode: cleanCode
         })).then(function(result) {
+            checkCurrent();
             if (result && result.className === 'auth.AuthorizationSignUpRequired') {
                 clearPending();
                 throw AuthError(REASONS.NO_ACCOUNT, 'No Telegram account for this number.');
@@ -277,6 +305,7 @@ function provideCode(code) {
             console.log('[auth] Signed in');
             return { success: true, status: 'signed_in' };
         }, function(err) {
+            checkCurrent();
             if (telegramErrorText(err).indexOf('SESSION_PASSWORD_NEEDED') !== -1) {
                 savePending({
                     v: 1,
@@ -317,7 +346,7 @@ function providePassword(password) {
         return Promise.reject(classify(err));
     }
     console.log('[auth] Submitting two-step verification password');
-    return withAuthClient(state.authSession, false, function(authClient) {
+    return withAuthClient(state.authSession, false, function(authClient, Api, checkCurrent) {
         var failure = null;
         return authClient.signInWithPassword({
             apiId: creds.apiId,
@@ -335,6 +364,7 @@ function providePassword(password) {
                 return true;
             }
         }).then(function() {
+            checkCurrent();
             if (!session.saveSession(authClient.session.save())) {
                 throw AuthError(REASONS.GENERIC, 'Could not save the Telegram session.');
             }
@@ -367,6 +397,7 @@ function checkConnection() {
  * @returns {Promise<{revoked: boolean}>}
  */
 function logout() {
+    generation++;
     clearPending();
     return client.disconnect().then(function(result) {
         clearPending();

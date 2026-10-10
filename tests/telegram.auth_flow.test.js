@@ -48,6 +48,7 @@ describe('Telegram sign-in', () => {
     });
 
     afterEach(() => {
+        vi.useRealTimers();
         auth.clearPendingAuth();
         sessionStore.clearSession();
         fake.uninstall();
@@ -122,6 +123,47 @@ describe('Telegram sign-in', () => {
         expect(gram.passwordAttempts).toBe(1);
         // The pending sign-in survives so the right password can be entered.
         await expect(auth.providePassword(PASSWORD)).resolves.toMatchObject({ success: true });
+    });
+
+    it('cancels sign-in queued immediately before logout', async () => {
+        const signIn = auth.startAuth(PHONE);
+        const rejected = expect(signIn).rejects.toMatchObject({ reason: auth.REASONS.NO_PENDING });
+        await auth.logout();
+        await rejected;
+        expect(gram.invocations).toHaveLength(0);
+        expect(auth.getAuthState().stage).toBe(null);
+    });
+
+    it('does not restore a session when sign-in finishes after logout', async () => {
+        await auth.startAuth(PHONE);
+        let finishSignIn;
+        gram.onInvoke = () => new Promise(resolve => { finishSignIn = resolve; });
+        const signIn = auth.provideCode(CODE);
+        const rejected = expect(signIn).rejects.toMatchObject({ reason: auth.REASONS.NO_PENDING });
+        for (let i = 0; i < 15; i++) await Promise.resolve();
+        expect(finishSignIn).toBeTypeOf('function');
+        await auth.logout();
+        finishSignIn({ className: 'auth.Authorization' });
+        await rejected;
+        expect(sessionStore.hasSession()).toBe(false);
+        expect(auth.getAuthState().stage).toBe(null);
+        expect(gram.instances.every(c => c.destroyed)).toBe(true);
+    });
+
+    it('bounds sign-in RPCs and rejects a late success after timeout', async () => {
+        vi.useFakeTimers();
+        await auth.startAuth(PHONE);
+        let finishSignIn;
+        gram.onInvoke = () => new Promise(resolve => { finishSignIn = resolve; });
+        const signIn = auth.provideCode(CODE);
+        const rejected = expect(signIn).rejects.toMatchObject({ reason: auth.REASONS.NETWORK });
+        await vi.advanceTimersByTimeAsync(30000);
+        await rejected;
+        finishSignIn({ className: 'auth.Authorization' });
+        for (let i = 0; i < 15; i++) await Promise.resolve();
+        expect(sessionStore.hasSession()).toBe(false);
+        expect(auth.getAuthState().isAuthInProgress).toBe(false);
+        expect(gram.instances.every(c => c.destroyed)).toBe(true);
     });
 
     it('reports an unconfigured build distinctly', async () => {

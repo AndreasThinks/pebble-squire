@@ -130,11 +130,10 @@ banner, `pkjs-polyfills.js`, and the entry file:
   before GramJS assigns `onopen`. The wrapper queues events until a handler
   exists. It marks itself with `WebSocket.__pebblegramWrapped`.
   (Historically `patches/003`.)
-- **`crypto.getRandomValues` fallback**. If the host has no `crypto` at all,
-  a `Math.random()`-based fallback is installed. **This is not
-  cryptographically secure.** It is kept for parity with the previously
-  shipped bundle, and it only takes effect when the host provides nothing
-  better.
+- **`crypto.getRandomValues` required**. A host-provided secure random source
+  is required for Telegram nonces, session IDs and DH secrets. If it is
+  missing, the fallback throws; Squire reports an unsupported phone runtime
+  before connecting. It never substitutes `Math.random()` for cryptography.
 - **`Response.prototype.arrayBuffer`**, **`window.addEventListener`** no-ops,
   and a global **`Buffer`**, which the Node flavour of GramJS uses as a
   global.
@@ -186,6 +185,8 @@ from `telegram/events`. The entry adds `EditedMessage` and
   - constructs a `TelegramClient` with `new StringSession('')` without
     connecting, and asserts that no socket, XHR, fetch or `require` was used.
 
-The smoke test does not cover a real MTProto handshake or login. Those need
-network access and real credentials (see the live tests in `tests/`, which are
-skipped without credentials) or a device.
+The smoke test also checks that a runtime without secure randomness refuses
+entropy requests, while runtimes providing `crypto.getRandomValues` keep their
+native implementation. It does not cover a real MTProto handshake or login.
+The tests in `tests/` use offline fakes; live sign-in and backend messaging need
+real API credentials, a compatible phone runtime and a Telegram test account.

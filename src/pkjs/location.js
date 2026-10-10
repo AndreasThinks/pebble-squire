@@ -14,40 +14,75 @@
  * limitations under the License.
  */
 
-var cachedLon = undefined;
-var cachedLat = undefined;
+var config = require('./config');
+var cachedLon;
+var cachedLat;
+var generation = 0;
+
+function validPosition(lat, lon) {
+    return isFinite(lat) && isFinite(lon) &&
+        lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
 
 exports.update = function() {
-    // start with whatever we knew before, if anything.
-    var oldLon = localStorage.getItem('oldLon');
-    var oldLat = localStorage.getItem('oldLat');
-    if (oldLon && oldLat) {
-        cachedLon = parseFloat(oldLon);
-        cachedLat = parseFloat(oldLat);
-        console.log("Cached location restored");
+    var mine = ++generation;
+    if (!config.isLocationEnabled()) {
+        cachedLon = undefined;
+        cachedLat = undefined;
+        try {
+            localStorage.removeItem('oldLon');
+            localStorage.removeItem('oldLat');
+        } catch (e) {}
+        return;
     }
-    
-    navigator.geolocation.getCurrentPosition(function(pos) {
-        cachedLat = pos.coords.latitude;
-        cachedLon = pos.coords.longitude;
-        console.log("Position updated");
-        localStorage.setItem('oldLon', cachedLon);
-        localStorage.setItem('oldLat', cachedLat);
-    }, function (err) {
-        console.log("Failed to update location: " + (err && err.code));
-    }, {
-        enableHighAccuracy: true,
-        maximumAge: 300000,
-        timeout: 30000,
-    });
-}
+
+    try {
+        var oldLon = localStorage.getItem('oldLon');
+        var oldLat = localStorage.getItem('oldLat');
+        var lon = Number(oldLon);
+        var lat = Number(oldLat);
+        if (oldLon !== null && oldLat !== null && oldLon !== '' && oldLat !== '' && validPosition(lat, lon)) {
+            cachedLon = lon;
+            cachedLat = lat;
+        }
+    } catch (e) {}
+
+    // Some phone/emulator runtimes do not provide geolocation.
+    if (typeof navigator === 'undefined' || !navigator.geolocation ||
+        typeof navigator.geolocation.getCurrentPosition !== 'function') {
+        return;
+    }
+    try {
+        navigator.geolocation.getCurrentPosition(function(pos) {
+            // Disabling location while a request is pending must also prevent
+            // its eventual result from being cached or used by a prompt.
+            if (mine !== generation || !config.isLocationEnabled() || !pos || !pos.coords ||
+                !validPosition(pos.coords.latitude, pos.coords.longitude)) {
+                return;
+            }
+            cachedLat = pos.coords.latitude;
+            cachedLon = pos.coords.longitude;
+            console.log('Position updated');
+            try {
+                localStorage.setItem('oldLon', String(cachedLon));
+                localStorage.setItem('oldLat', String(cachedLat));
+            } catch (e) {}
+        }, function(err) {
+            console.log('Failed to update location: ' + (err && err.code));
+        }, {
+            enableHighAccuracy: true,
+            maximumAge: 300000,
+            timeout: 30000
+        });
+    } catch (e) {
+        console.log('Location is unavailable');
+    }
+};
 
 exports.isReady = function() {
-    // Compare against undefined rather than truthiness: latitude or longitude
-    // of exactly 0 (the equator / prime meridian) is a valid position.
-    return cachedLon !== undefined && cachedLat !== undefined;
-}
+    return config.isLocationEnabled() && cachedLon !== undefined && cachedLat !== undefined;
+};
 
 exports.getPos = function() {
-    return {lon: cachedLon, lat: cachedLat};
-}
+    return { lon: cachedLon, lat: cachedLat };
+};
