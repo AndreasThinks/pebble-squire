@@ -19,5 +19,8 @@ Justin Sunseri
 Stasia Michalska <lcp.world>
 Justin Sunseri
 
+## Squire Plus companion
+Designed for Squire Plus
+
 ## Licence
 Apache 2.0. Original copyright notices retained.

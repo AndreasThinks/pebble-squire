@@ -40,3 +40,18 @@ The CLI was invoked without `--is-published`, intending a nonpublic release. A s
 - Live sign-out was tested functionally; server-side session revocation was not independently inspected.
 
 This source release records the already-published app identity and documentation. It introduces no further app behaviour changes or Store upload.
+
+## Addendum, 2026-10-10: Store install on Android
+
+Added after the record above; the record itself is left as written at the time.
+
+Andreas later reported installing Squire Plus 0.1.0 **from the Store** on Android and
+confirming that the Store-installed app works. The individual messaging, slow-reply,
+history, Bluetooth and sign-out/sign-in checks listed above were reported earlier
+against the sideloaded test build, not separately repeated after Store installation.
+
+As before, this is user-reported hardware evidence, not automated telemetry. The exact watch
+model and Android and Pebble app versions were not recorded. It is not coverage of every
+build target, and iOS remains unverified. This supersedes only the earlier statement that
+Store installation had not been independently confirmed. It confirms installation as
+reported by the user, not an independent download and hash check of the Store artifact.

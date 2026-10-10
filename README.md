@@ -1,6 +1,8 @@
 # Squire Plus
 
-An independently maintained fork of [Squire by Justin Sunseri](https://github.com/jmsunseri/pebble-squire), based on Bobby by Katharine Berry. Original Apache 2.0 licence and copyright notices are retained.
+<img src="docs/store/icon-144.png" alt="The Squire Plus companion: a rounded face with a dark visor, two bright eyes, a smile and a gold plus-sign crest" width="96" align="right">
+
+An independently maintained fork of [Squire by Justin Sunseri](https://github.com/jmsunseri/pebble-squire), based on Bobby by Katharine Berry. Squire Plus is maintained by Andreas Varotsis; the original authors are credited [below](#credits). Original Apache 2.0 licence and copyright notices are retained.
 
 Squire Plus has its own app UUID and can coexist with Squire. It requires fresh onboarding and Telegram sign-in; settings and login sessions are not migrated from the original app.
 
@@ -14,11 +16,20 @@ The phone connects directly to Telegram. There is no separate Squire Plus server
 
 ## Requirements
 
-- A supported Pebble: basalt, chalk, diorite, emery or gabbro. Aplite and flint are not build targets.
-- A Pebble phone app with working PebbleKit JS, WebSockets and a secure `crypto.getRandomValues` implementation. Squire Plus refuses Telegram connections when secure randomness is unavailable. Cobble has known compatibility issues and is not supported. A successful build or emulator launch does not establish phone compatibility.
-- An existing Telegram account and a bot configured in your Hermes or OpenClaw backend.
-- Telegram application credentials (`api_id` and `api_hash`) from [my.telegram.org/apps](https://my.telegram.org/apps). These identify the Telegram client; they are different from your bot's BotFather token.
-- For development: Node.js 24 with npm 11.9.0, Python 3.10+ (tested with 3.12), a C compiler and Make for host tests, and the Pebble SDK. The validated tool versions are `pebble-tool` 5.0.40 and SDK 4.33.1. npm 10.9.9 crashes resolving the root dependencies; use the validated npm version (`npm install --global npm@11.9.0`).
+To use Squire Plus from the Store you need:
+
+- A supported Pebble: basalt, chalk, diorite, emery or gabbro. Aplite and flint are not supported.
+- A Pebble phone app with working PebbleKit JS, WebSockets and a secure `crypto.getRandomValues` implementation. Squire Plus refuses Telegram connections when secure randomness is unavailable. Cobble has known compatibility issues and is not supported.
+- Your own Telegram account. You sign in with it on the watch or in the phone settings.
+- An agent bot configured in your own Hermes or OpenClaw backend (see [Set up the agent bot](#set-up-the-agent-bot)).
+
+Store users do **not** need Telegram application credentials. Those (`api_id` and `api_hash`) are only needed if you [build Squire Plus yourself](#build-it-yourself).
+
+## Install from the Store
+
+1. [Set up your agent bot](#set-up-the-agent-bot) and make sure your backend is running.
+2. Install [Squire Plus from the Rebble Store](https://apps.repebble.com/dd12fd7290054f6aaaa4e41f) through your Pebble phone app.
+3. Follow [Configure and use Squire Plus](#configure-and-use-squire-plus) to choose your bot and sign in to Telegram.
 
 ### Set up the agent bot
 
@@ -27,7 +38,14 @@ The phone connects directly to Telegram. There is no separate Squire Plus server
 3. Note the bot's username, for example `@MyHermesBot`. The bot token belongs in the backend configuration, **not** Squire Plus's settings.
 4. Make sure the backend permits your Telegram account to use the bot. Send `/start` to the bot in Telegram if your backend needs it.
 
-## Build and install
+## Build it yourself
+
+You need, in addition to the requirements above:
+
+- Your own Telegram application credentials (`api_id` and `api_hash`) from [my.telegram.org/apps](https://my.telegram.org/apps). These identify the Telegram client; they are different from your bot's BotFather token. A build you make yourself uses your credentials, not the Store build's.
+- Node.js 24 with npm 11.9.0, Python 3.10+ (tested with 3.12), a C compiler and Make for host tests, and the Pebble SDK. The validated tool versions are `pebble-tool` 5.0.40 and SDK 4.33.1. npm 10.9.9 crashes resolving the root dependencies; use the validated npm version (`npm install --global npm@11.9.0`).
+
+A successful build or emulator launch does not establish phone compatibility.
 
 Clone this repository and open its root directory. Use an isolated Python environment:
 
@@ -47,7 +65,7 @@ pebble build -- -j4
 pebble install --phone PHONE_IP
 ```
 
-Enable the developer connection in the Pebble phone app before installing. Alternatively, install the generated `build/pebble-squire.pbw` through your phone. The package contains all five supported watch targets and the phone JavaScript.
+Enable the developer connection in the Pebble phone app before installing. Alternatively, install the generated `.pbw` from `build/` through your phone (it is named after the checkout directory, for example `build/pebble-squire.pbw`). The package contains all five supported watch targets and the phone JavaScript.
 
 For an **offline development build** that cannot sign in to Telegram:
 
@@ -108,7 +126,7 @@ npm run verify:telegram
 npm run smoke:telegram
 ```
 
-The watch's visual design, palette and screen flow are documented in [docs/DESIGN.md](docs/DESIGN.md).
+The watch's visual design, palette and screen flow are documented in [docs/DESIGN.md](docs/DESIGN.md); the Squire Plus companion and icons in [docs/IDENTITY-REFRESH.md](docs/IDENTITY-REFRESH.md).
 
 The JavaScript tests use offline Telegram and Pebble fakes. The C tests exercise conversation storage, request correlation, watchdogs, history, formatted-text rendering and allocation failures with AddressSanitizer and UndefinedBehaviorSanitizer, without needing the SDK. The bundle checks rebuild to temporary files, compare the committed checksum and exercise a PebbleKit-like runtime.
 
@@ -117,9 +135,11 @@ For changes to the bundle inputs, see [scripts/README.md](scripts/README.md). Re
 ```text
 src/c/                 Watch UI, conversations, auth and memory handling
 docs/DESIGN.md         Design rationale: palette, type, screens and flow
+docs/IDENTITY-REFRESH.md  The Squire Plus companion, icons and their sources
 src/pkjs/              Phone settings, location, history and agent sessions
 src/pkjs/telegram/     Telegram client, sign-in and session storage
 resources/             Watch icons, animations and consent text
+tools/identity/        Generator for the launcher and Store icons
 scripts/               Reproducible Telegram bundle tooling
 tests/                 Offline JavaScript and host C regression tests
 wscript                Watch build and Telegram credential injection
@@ -145,7 +165,7 @@ Automated tests and emulator screenshots can't cover these; check them on a watc
 - [ ] **Sign out:** More → Sign out with and without network; check Telegram → Settings → Devices.
 - [ ] **Quick launch:** each quick-launch setting; the one-minute timeout never closes mid-reply.
 - [ ] **Low memory:** a very long reply and a long conversation on basalt or diorite.
-- [ ] **Every platform:** layout on each watch you have, especially gabbro (no new-design emulator screenshots).
+- [ ] **Every platform:** layout on each watch you have, especially gabbro (see `docs/screenshots/README.md` for which targets have emulator screenshots of the current home screen).
 
 ### Troubleshooting
 
@@ -159,12 +179,39 @@ Automated tests and emulator screenshots can't cover these; check them on a watc
 
 ## Privacy and security
 
+### Where your data goes
+
+| Data | Path | Stored where |
+|---|---|---|
+| Dictated prompts | Watch → phone (Bluetooth) → Telegram → your agent bot | In your Telegram chat with the bot, and wherever your backend keeps it |
+| Replies | Your backend → Telegram → phone → watch | In the Telegram chat; the watch keeps the current conversation in memory only |
+| Location (only if allowed) | Phone → Telegram → your backend, inside the prompt | In the Telegram chat and your backend; the phone caches the last position |
+| Telegram session | Created on the phone at sign-in | Phone app's private storage only; never sent to the watch or settings page |
+| Recent history | Telegram → phone → watch, when you open Squire Plus | Watch memory; cleared on sign-out |
+
+Squire Plus has no maintainer-operated relay or analytics server. Your phone's dictation service may also process speech according to its own policy. Telegram and your agent backend do: their own terms and privacy policies apply, and your backend decides what the agent can see, keep and do.
+
+### Details
+
 - Prompts, replies and enabled location coordinates travel through Telegram to your configured backend. Backend permissions, retention and actions depend on your agent setup.
 - The Telegram session is a **bearer credential** stored in the Pebble phone app's private localStorage. Anyone obtaining it may act as your account until revocation. It is never sent to the watch or settings page. Encrypting it with a key embedded in the same app would not provide meaningful protection.
 - Pending sign-in temporarily stores the phone number, code hash and temporary auth session, so sign-in can survive phone-JavaScript restarts. Expired state is discarded on the next auth access. Login codes and cloud passwords are never persisted or logged.
 - Location is acquired only when allowed. Disabling it clears Squire Plus's coordinate cache and ignores outstanding position results. When acquisition fails, an allowed previously cached position may still be used.
 - Telegram application credentials are embedded in the generated phone JavaScript and therefore in the PBW, as in other Telegram clients. Build artifacts containing them should be handled accordingly. Bot tokens never belong in this app.
 - Automated tests and emulator checks do not prove live Telegram sign-in, real-device dictation or backend actions work. Test those with your own account, compatible phone runtime and backend before distributing a release.
+
+## Telegram
+
+Squire Plus is an unofficial client built on the Telegram API. It is not affiliated with or endorsed by Telegram. Whether Telegram's API terms permit this kind of assistant client has not been resolved, and Store acceptance is not confirmation of compliance; review Telegram's terms yourself before relying on it.
+
+## Credits
+
+- **Squire Plus** is maintained by Andreas Varotsis. The Squire Plus companion, its home screen and the Squire Plus icons were designed for this fork.
+- **Squire**, the app this is forked from, is by Justin Sunseri.
+- **Bobby**, on which Squire is based, is by Katharine Berry.
+- Original iconography by Stasia Michalska and Justin Sunseri. The microphone, question, more and status icons are theirs, unchanged.
+
+The original authors do not maintain or support Squire Plus; please report problems here, not upstream.
 
 ## Contributing and license
 

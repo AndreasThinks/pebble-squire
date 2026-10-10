@@ -47,6 +47,15 @@
 #define SQUIRE_COLOR_FIELD COLOR_FALLBACK(GColorCobaltBlue, GColorWhite)
 #define SQUIRE_COLOR_FIELD_OFFLINE COLOR_FALLBACK(GColorDarkGray, GColorWhite)
 
+// The Squire Plus companion (src/c/companion.c). Ink outlines and a dark visor
+// keep the face legible on the azure field and on white paper alike.
+#define SQUIRE_COLOR_COMPANION_INK GColorBlack
+#define SQUIRE_COLOR_COMPANION_FACE GColorWhite
+#define SQUIRE_COLOR_COMPANION_VISOR COLOR_FALLBACK(GColorOxfordBlue, GColorBlack)
+#define SQUIRE_COLOR_COMPANION_EYE GColorWhite
+#define SQUIRE_COLOR_COMPANION_CREST SQUIRE_COLOR_GOLD
+#define SQUIRE_COLOR_COMPANION_BODY COLOR_FALLBACK(GColorPictonBlue, GColorWhite)
+
 // Legacy names kept for code that predates the token set.
 #define ACCENT_COLOUR SQUIRE_COLOR_AZURE
 #define BRANDED_BACKGROUND_COLOUR SQUIRE_COLOR_AZURE

@@ -1,7 +1,7 @@
 {
   "name": "squire-plus",
   "author": "Andreas Varotsis",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "keywords": [
     "pebble-app"
   ],
@@ -99,11 +99,6 @@
           "file": "images_button_indicator.png",
           "name": "BUTTON_INDICATOR",
           "type": "bitmap"
-        },
-        {
-          "file": "images_root_screen_squire_large.pdc",
-          "name": "ROOT_SCREEN_SQUIRE",
-          "type": "raw"
         },
         {
           "file": "images_sleeping_pony.pdc",
