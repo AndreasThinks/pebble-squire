@@ -185,6 +185,8 @@ if (typeof G.WebSocket === 'function' && G.WebSocket.__pebblegramWrapped !== tru
             if (NativeWebSocket[name] !== undefined) PebblegramWebSocket[name] = NativeWebSocket[name];
         });
         PebblegramWebSocket.__pebblegramWrapped = true;
+        // Core Devices dispatches native callbacks through global WebSocket._instances.
+        if (NativeWebSocket._instances) PebblegramWebSocket._instances = NativeWebSocket._instances;
         G.WebSocket = PebblegramWebSocket;
         G.window.WebSocket = PebblegramWebSocket;
     })();

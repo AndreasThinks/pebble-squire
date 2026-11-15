@@ -48,6 +48,7 @@ function retireClient(c) {
 }
 
 var CLIENT_OPTIONS = {
+    useWSS: true,
     connectionRetries: 5,
     deviceModel: 'Squire Plus',
     systemVersion: '1.0',

@@ -315,6 +315,28 @@ async function runScenario(code, options) {
     }
 }
 
+function testNativeWebSocketCallbacks(code) {
+    const env = createPkjsContext({name: 'native socket callbacks', windowIsGlobal: true});
+    // Core Devices delivers events by looking up the socket on the global constructor.
+    function NativeWebSocket() { NativeWebSocket._instances[0] = this; }
+    NativeWebSocket._instances = {};
+    env.context.WebSocket = NativeWebSocket;
+    loadBundle(code, env);
+    const Wrapped = env.context.WebSocket;
+    const socket = new Wrapped('wss://example.invalid/apiws');
+    const registry = Wrapped._instances;
+    ok(registry === NativeWebSocket._instances, 'native WebSocket callback registry survives wrapping');
+    if (!registry) return;
+    let opened = false;
+    let received;
+    const bytes = Uint8Array.of(1, 2).buffer;
+    registry[0].onopen({type: 'open'});
+    socket.onopen = () => { opened = true; };
+    socket.onmessage = event => { received = event.data; };
+    registry[0].onmessage({data: bytes});
+    ok(opened && received === bytes, 'native open and binary message reach the wrapped socket');
+}
+
 function shimSelfTest() {
     section('crypto shim self-test (scripts/shims/crypto.js vs Node crypto)');
     const shim = require('./shims/crypto.js');
@@ -337,6 +359,7 @@ async function main() {
     } catch (err) {
         ok(false, err.message);
     }
+    testNativeWebSocketCallbacks(code);
     shimSelfTest();
     await runScenario(code, { name: 'pkjs-minimal (no window/self/navigator/crypto/Buffer/process)' });
     await runScenario(code, { name: 'pkjs-window (window === global, crypto.getRandomValues, no subtle)', windowIsGlobal: true, cryptoGetRandomValues: true });
