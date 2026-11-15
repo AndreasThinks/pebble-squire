@@ -26,6 +26,11 @@ describe('Telegram client lifecycle', () => {
         Queue.reset();
     });
 
+    it('requests secure WebSockets for both fresh and saved sessions', () => {
+        expect(client.createClient('').options.useWSS).toBe(true);
+        expect(client.createClient('stored-session').options.useWSS).toBe(true);
+    });
+
     it('shares one connection between concurrent callers', async () => {
         // Two connections on one auth key make Telegram revoke it.
         await Promise.all([client.initClient(), client.initClient(), client.initClient()]);

@@ -19,7 +19,8 @@ function install(vi, options) {
     StringSession.prototype.save = function() { return this.value || SESSION_SECRET + '-' + state.instances.length; };
     StringSession.prototype.setDC = function() {};
 
-    function TelegramClient(session, apiId, apiHash) {
+    function TelegramClient(session, apiId, apiHash, clientOptions) {
+        this.options = clientOptions;
         this.session = session;
         this.apiId = apiId;
         this.apiHash = apiHash;
